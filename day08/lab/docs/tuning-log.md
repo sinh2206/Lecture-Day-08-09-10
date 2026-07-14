@@ -1,106 +1,36 @@
-# Tuning Log — RAG Pipeline (Day 08 Lab)
+# Nhật ký tuning RAG - Day 08
 
-> Template: Ghi lại mỗi thay đổi và kết quả quan sát được.
-> A/B Rule: Chỉ đổi MỘT biến mỗi lần.
+## Thí nghiệm A/B
 
----
+Mục tiêu là đo tác động của hybrid retrieval trên corpus có cả ngôn ngữ tự nhiên và exact term. Hai nhánh giữ nguyên chunking, embedding, top-k, prompt, LLM và rerank; biến duy nhất thay đổi là `retrieval_mode`.
 
-## Baseline (Sprint 2)
+| Tham số | Baseline | Variant |
+|---|---|---|
+| Chunk size / overlap | 400 / 80 token ước lượng | 400 / 80 token ước lượng |
+| Retrieval | Dense | Hybrid: dense + BM25 + RRF + query-domain coverage |
+| Top-k search / select | 10 / 3 | 10 / 3 |
+| Rerank | Tắt | Tắt |
+| Embedding | `paraphrase-multilingual-MiniLM-L12-v2` | Không đổi |
+| Generation | Provider cấu hình hoặc extractive fallback | Không đổi |
 
-**Ngày:** ___________  
-**Config:**
-```
-retrieval_mode = "dense"
-chunk_size = _____ tokens
-overlap = _____ tokens
-top_k_search = 10
-top_k_select = 3
-use_rerank = False
-llm_model = _____
-```
+Giả thuyết: hybrid tăng context recall cho alias `Approval Matrix`, nhãn `P1`, `Level 3`, email và mã định danh. Dense có thể tốt tương đương ở câu paraphrase tự nhiên; BM25 có thể thêm noise nên RRF chỉ dành trọng số 0,4 cho nhánh sparse.
 
-**Scorecard Baseline:**
-| Metric | Average Score |
-|--------|--------------|
-| Faithfulness | ? /5 |
-| Answer Relevance | ? /5 |
-| Context Recall | ? /5 |
-| Completeness | ? /5 |
+## Kết quả runtime
 
-**Câu hỏi yếu nhất (điểm thấp):**
-> TODO: Liệt kê 2-3 câu hỏi có điểm thấp nhất và lý do tại sao.
-> Ví dụ: "q07 (Approval Matrix) - context recall = 1/5 vì dense bỏ lỡ alias."
+Phần giữa hai marker được `eval.py` cập nhật sau khi chạy. Trước khi chạy, không có số liệu thực và không được suy diễn điểm.
 
-**Giả thuyết nguyên nhân (Error Tree):**
-- [ ] Indexing: Chunking cắt giữa điều khoản
-- [ ] Indexing: Metadata thiếu effective_date
-- [ ] Retrieval: Dense bỏ lỡ exact keyword / alias
-- [ ] Retrieval: Top-k quá ít → thiếu evidence
-- [ ] Generation: Prompt không đủ grounding
-- [ ] Generation: Context quá dài → lost in the middle
+<!-- AUTO_RESULTS_START -->
+Chưa có kết quả runtime. Chạy `python eval.py` sau khi đã chạy `python index.py`.
+<!-- AUTO_RESULTS_END -->
 
----
+## Cách đọc kết quả
 
-## Variant 1 (Sprint 3)
+- Context recall tăng nhưng faithfulness giảm: hybrid tìm đủ nguồn hơn nhưng top-k có noise; xem từng chunk trước khi đổi prompt.
+- Relevance và completeness cùng tăng: variant cải thiện cả retrieval lẫn câu trả lời cuối.
+- Alias `q07` tăng riêng: BM25 đã bổ sung đúng exact phrase trong preamble của Access Control SOP.
+- Câu abstain `q09` phải tiếp tục không dùng nguồn và không bịa; nếu variant trả lời mã lỗi, đó là regression nghiêm trọng.
+- Delta bằng 0 vẫn là kết quả hợp lệ với corpus nhỏ; không bật thêm rerank trong cùng lần đo để “làm đẹp” số.
 
-**Ngày:** ___________  
-**Biến thay đổi:** ___________  
-**Lý do chọn biến này:**
-> TODO: Giải thích theo evidence từ baseline results.
-> Ví dụ: "Chọn hybrid vì q07 (alias query) và q09 (mã lỗi ERR-403) đều thất bại với dense.
-> Corpus có cả ngôn ngữ tự nhiên (policy) lẫn tên riêng/mã lỗi (ticket code, SLA label)."
+## Quyết định tiếp theo
 
-**Config thay đổi:**
-```
-retrieval_mode = "hybrid"   # hoặc biến khác
-# Các tham số còn lại giữ nguyên như baseline
-```
-
-**Scorecard Variant 1:**
-| Metric | Baseline | Variant 1 | Delta |
-|--------|----------|-----------|-------|
-| Faithfulness | ?/5 | ?/5 | +/- |
-| Answer Relevance | ?/5 | ?/5 | +/- |
-| Context Recall | ?/5 | ?/5 | +/- |
-| Completeness | ?/5 | ?/5 | +/- |
-
-**Nhận xét:**
-> TODO: Variant 1 cải thiện ở câu nào? Tại sao?
-> Có câu nào kém hơn không? Tại sao?
-
-**Kết luận:**
-> TODO: Variant 1 có tốt hơn baseline không?
-> Bằng chứng là gì? (điểm số, câu hỏi cụ thể)
-
----
-
-## Variant 2 (nếu có thời gian)
-
-**Biến thay đổi:** ___________  
-**Config:**
-```
-# TODO
-```
-
-**Scorecard Variant 2:**
-| Metric | Baseline | Variant 1 | Variant 2 | Best |
-|--------|----------|-----------|-----------|------|
-| Faithfulness | ? | ? | ? | ? |
-| Answer Relevance | ? | ? | ? | ? |
-| Context Recall | ? | ? | ? | ? |
-| Completeness | ? | ? | ? | ? |
-
----
-
-## Tóm tắt học được
-
-> TODO (Sprint 4): Điền sau khi hoàn thành evaluation.
-
-1. **Lỗi phổ biến nhất trong pipeline này là gì?**
-   > _____________
-
-2. **Biến nào có tác động lớn nhất tới chất lượng?**
-   > _____________
-
-3. **Nếu có thêm 1 giờ, nhóm sẽ thử gì tiếp theo?**
-   > _____________
+Chỉ chọn hybrid làm cấu hình phục vụ nếu context recall không giảm và không tạo regression ở câu abstain. Nếu hybrid tăng recall nhưng thêm noise, thí nghiệm kế tiếp nên giữ hybrid và chỉ bật rerank; đó phải là một A/B mới, không gộp vào kết quả hiện tại.

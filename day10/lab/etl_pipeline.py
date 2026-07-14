@@ -19,7 +19,9 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
+from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -29,9 +31,9 @@ from monitoring.freshness_check import check_manifest_freshness
 from quality.expectations import run_expectations
 from transform.cleaning_rules import clean_rows, load_raw_csv, write_cleaned_csv, write_quarantine_csv
 
-load_dotenv()
-
 ROOT = Path(__file__).resolve().parent
+load_dotenv(ROOT / ".env")
+
 RAW_DEFAULT = ROOT / "data" / "raw" / "policy_export_dirty.csv"
 ART = ROOT / "artifacts"
 LOG_DIR = ART / "logs"
@@ -46,14 +48,35 @@ def _log(path: Path, line: str) -> None:
         f.write(line + "\n")
 
 
+def _safe_run_id(value: str) -> str:
+    cleaned = re.sub(r"[^0-9A-Za-z_.-]+", "-", value).strip("-.")
+    if not cleaned:
+        raise ValueError("run_id không hợp lệ")
+    return cleaned[:96]
+
+
+def _display_path(path: Path) -> str:
+    try:
+        return str(path.resolve().relative_to(ROOT))
+    except ValueError:
+        return str(path.resolve())
+
+
+def _resolve_from_root(value: str) -> Path:
+    path = Path(value)
+    return path if path.is_absolute() else ROOT / path
+
+
 def cmd_run(args: argparse.Namespace) -> int:
-    run_id = args.run_id or datetime.now(timezone.utc).strftime("%Y-%m-%dT%H-%MZ")
-    raw_path = Path(args.raw)
+    run_id = _safe_run_id(
+        args.run_id or datetime.now(timezone.utc).strftime("%Y-%m-%dT%H-%M-%SZ")
+    )
+    raw_path = Path(args.raw).resolve()
     if not raw_path.is_file():
         print(f"ERROR: raw file not found: {raw_path}", file=sys.stderr)
         return 1
 
-    log_path = LOG_DIR / f"run_{run_id.replace(':', '-')}.log"
+    log_path = LOG_DIR / f"run_{run_id}.log"
     for p in (LOG_DIR, MAN_DIR, QUAR_DIR, CLEAN_DIR):
         p.mkdir(parents=True, exist_ok=True)
 
@@ -70,20 +93,23 @@ def cmd_run(args: argparse.Namespace) -> int:
         rows,
         apply_refund_window_fix=not args.no_refund_fix,
     )
-    cleaned_path = CLEAN_DIR / f"cleaned_{run_id.replace(':', '-')}.csv"
-    quar_path = QUAR_DIR / f"quarantine_{run_id.replace(':', '-')}.csv"
+    cleaned_path = CLEAN_DIR / f"cleaned_{run_id}.csv"
+    quar_path = QUAR_DIR / f"quarantine_{run_id}.csv"
     write_cleaned_csv(cleaned_path, cleaned)
     write_quarantine_csv(quar_path, quarantine)
 
     log(f"cleaned_records={len(cleaned)}")
     log(f"quarantine_records={len(quarantine)}")
-    log(f"cleaned_csv={cleaned_path.relative_to(ROOT)}")
-    log(f"quarantine_csv={quar_path.relative_to(ROOT)}")
+    log(f"cleaned_doc_counts={json.dumps(Counter(row['doc_id'] for row in cleaned), ensure_ascii=False, sort_keys=True)}")
+    log(f"quarantine_reason_counts={json.dumps(Counter(row['reason'] for row in quarantine), ensure_ascii=False, sort_keys=True)}")
+    log(f"cleaned_csv={_display_path(cleaned_path)}")
+    log(f"quarantine_csv={_display_path(quar_path)}")
 
     results, halt = run_expectations(cleaned)
     for r in results:
         sym = "OK" if r.passed else "FAIL"
         log(f"expectation[{r.name}] {sym} ({r.severity}) :: {r.detail}")
+    log(f"expectations_passed={sum(result.passed for result in results)}/{len(results)}")
     if halt and not args.skip_validate:
         log("PIPELINE_HALT: expectation suite failed (halt).")
         return 2
@@ -103,25 +129,43 @@ def cmd_run(args: argparse.Namespace) -> int:
     if cleaned:
         latest_exported = max((r.get("exported_at") or "" for r in cleaned), default="")
 
+    published_at = datetime.now(timezone.utc).isoformat()
     manifest = {
         "run_id": run_id,
-        "run_timestamp": datetime.now(timezone.utc).isoformat(),
-        "raw_path": str(raw_path.relative_to(ROOT)),
+        "run_timestamp": published_at,
+        "published_at": published_at,
+        "raw_path": _display_path(raw_path),
         "raw_records": raw_count,
         "cleaned_records": len(cleaned),
         "quarantine_records": len(quarantine),
         "latest_exported_at": latest_exported,
         "no_refund_fix": bool(args.no_refund_fix),
         "skipped_validate": bool(args.skip_validate and halt),
-        "cleaned_csv": str(cleaned_path.relative_to(ROOT)),
-        "chroma_path": os.environ.get("CHROMA_DB_PATH", "./chroma_db"),
+        "cleaned_csv": _display_path(cleaned_path),
+        "quarantine_csv": _display_path(quar_path),
+        "quarantine_reason_counts": dict(Counter(row["reason"] for row in quarantine)),
+        "expectations": [
+            {
+                "name": result.name,
+                "passed": result.passed,
+                "severity": result.severity,
+                "detail": result.detail,
+            }
+            for result in results
+        ],
+        "chroma_path": str(
+            _resolve_from_root(os.environ.get("CHROMA_DB_PATH", "chroma_db")).resolve()
+        ),
         "chroma_collection": os.environ.get("CHROMA_COLLECTION", "day10_kb"),
+        "embedding_model": os.environ.get("EMBEDDING_MODEL", "all-MiniLM-L6-v2"),
     }
-    man_path = MAN_DIR / f"manifest_{run_id.replace(':', '-')}.json"
+    man_path = MAN_DIR / f"manifest_{run_id}.json"
     man_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
-    log(f"manifest_written={man_path.relative_to(ROOT)}")
+    log(f"manifest_written={_display_path(man_path)}")
 
     status, fdetail = check_manifest_freshness(man_path, sla_hours=float(os.environ.get("FRESHNESS_SLA_HOURS", "24")))
+    manifest["freshness"] = {"status": status, "detail": fdetail}
+    man_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
     log(f"freshness_check={status} {json.dumps(fdetail, ensure_ascii=False)}")
 
     log("PIPELINE_OK")
@@ -136,9 +180,10 @@ def cmd_embed_internal(cleaned_csv: Path, *, run_id: str, log) -> bool:
         log("ERROR: chromadb chưa cài. pip install -r requirements.txt")
         return False
 
-    db_path = os.environ.get("CHROMA_DB_PATH", str(ROOT / "chroma_db"))
+    db_path = _resolve_from_root(os.environ.get("CHROMA_DB_PATH", "chroma_db"))
     collection_name = os.environ.get("CHROMA_COLLECTION", "day10_kb")
     model_name = os.environ.get("EMBEDDING_MODEL", "all-MiniLM-L6-v2")
+    log(f"embedding_model={model_name}")
 
     from transform.cleaning_rules import load_raw_csv as load_csv  # same loader
 
@@ -147,9 +192,13 @@ def cmd_embed_internal(cleaned_csv: Path, *, run_id: str, log) -> bool:
         log("WARN: cleaned CSV rỗng — không embed.")
         return True
 
-    client = chromadb.PersistentClient(path=db_path)
+    client = chromadb.PersistentClient(path=str(db_path))
     emb = embedding_functions.SentenceTransformerEmbeddingFunction(model_name=model_name)
-    col = client.get_or_create_collection(name=collection_name, embedding_function=emb)
+    col = client.get_or_create_collection(
+        name=collection_name,
+        embedding_function=emb,
+        metadata={"hnsw:space": "cosine"},
+    )
 
     ids = [r["chunk_id"] for r in rows]
     # Tránh “mồi cũ” trong top-k: xóa id không còn trong cleaned run này (index = snapshot publish).

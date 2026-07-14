@@ -1,148 +1,98 @@
-# System Architecture — Lab Day 09
+# Kiến trúc Supervisor-Worker - Day 09
 
-**Nhóm:** ___________  
-**Ngày:** ___________  
-**Version:** 1.0
+## 1. Tổng quan
 
----
+Hệ thống tách quyết định luồng, truy xuất, phân tích policy/tool và tổng hợp thành các thành phần có contract riêng. Supervisor chỉ phân loại intent/risk; mọi câu trả lời cuối đều đi qua retrieval và synthesis, còn policy worker chỉ được thêm khi task chứa access hoặc ngoại lệ chính sách.
 
-## 1. Tổng quan kiến trúc
-
-> Mô tả ngắn hệ thống của nhóm: chọn pattern gì, gồm những thành phần nào.
-
-**Pattern đã chọn:** Supervisor-Worker  
-**Lý do chọn pattern này (thay vì single agent):**
-
-_________________
-
----
-
-## 2. Sơ đồ Pipeline
-
-> Vẽ sơ đồ pipeline dưới dạng text, Mermaid diagram, hoặc ASCII art.
-> Yêu cầu tối thiểu: thể hiện rõ luồng từ input → supervisor → workers → output.
-
-**Ví dụ (ASCII art):**
-```
-User Request
-     │
-     ▼
-┌──────────────┐
-│  Supervisor  │  ← route_reason, risk_high, needs_tool
-└──────┬───────┘
-       │
-   [route_decision]
-       │
-  ┌────┴────────────────────┐
-  │                         │
-  ▼                         ▼
-Retrieval Worker     Policy Tool Worker
-  (evidence)           (policy check + MCP)
-  │                         │
-  └─────────┬───────────────┘
-            │
-            ▼
-      Synthesis Worker
-        (answer + cite)
-            │
-            ▼
-         Output
+```mermaid
+flowchart TD
+    U[User task] --> S[Supervisor]
+    S -->|retrieval route| R[Retrieval worker]
+    S -->|policy route| R
+    S -->|explicit human route| H[Human review trace]
+    H --> R
+    R -->|policy route| P[Policy/tool worker]
+    P --> M[MCP dispatcher]
+    M --> K[search_kb]
+    M --> T[get_ticket_info]
+    M --> A[check_access_permission]
+    R --> Y[Synthesis worker]
+    P --> Y
+    Y --> C{Risk cao và confidence < 0.4?}
+    C -->|Có| H2[HITL triggered]
+    C -->|Không| O[Final answer + trace]
+    H2 --> O
 ```
 
-**Sơ đồ thực tế của nhóm:**
-
-```
-[NHÓM ĐIỀN VÀO ĐÂY]
-```
-
----
-
-## 3. Vai trò từng thành phần
+## 2. Thành phần
 
 ### Supervisor (`graph.py`)
 
-| Thuộc tính | Mô tả |
-|-----------|-------|
-| **Nhiệm vụ** | ___________________ |
-| **Input** | ___________________ |
-| **Output** | supervisor_route, route_reason, risk_high, needs_tool |
-| **Routing logic** | ___________________ |
-| **HITL condition** | ___________________ |
+- Input: `task`.
+- Output: `supervisor_route`, `route_reason`, `risk_high`, `needs_tool`.
+- Route policy khi có `cấp quyền`, `access`, `Level`, `contractor`, `Flash Sale`, sản phẩm số, store credit hoặc temporal policy signal.
+- Route retrieval cho câu tra cứu thông thường, gồm refund window và SLA.
+- Gắn risk cho P1, emergency, 2am, production và mã `ERR-*`.
+- Không chứa câu trả lời domain và không gọi LLM.
 
-### Retrieval Worker (`workers/retrieval.py`)
+### Retrieval worker (`workers/retrieval.py`)
 
-| Thuộc tính | Mô tả |
-|-----------|-------|
-| **Nhiệm vụ** | ___________________ |
-| **Embedding model** | ___________________ |
-| **Top-k** | ___________________ |
-| **Stateless?** | Yes / No |
+- Tự đọc đủ năm tệp trong `data/docs`, chunk theo heading, upsert snapshot vào `day09_docs` và prune ID cũ.
+- Dùng `all-MiniLM-L6-v2` mặc định cho cả index và query; có thể đổi bằng `EMBEDDING_MODEL`.
+- Query toàn snapshot nhỏ, giữ chunk tốt nhất của mỗi domain suy ra trực tiếp từ task rồi lấp top-k theo dense rank; không đọc expected source.
+- Top-k mặc định lấy từ `RETRIEVAL_TOP_K`, hiện khuyến nghị 5 để câu multi-document có đủ SLA và access evidence.
+- Không dùng random embedding và không tạo fake chunk khi lỗi.
 
-### Policy Tool Worker (`workers/policy_tool.py`)
+### Policy/tool worker (`workers/policy_tool.py`)
 
-| Thuộc tính | Mô tả |
-|-----------|-------|
-| **Nhiệm vụ** | ___________________ |
-| **MCP tools gọi** | ___________________ |
-| **Exception cases xử lý** | ___________________ |
+- Phát hiện Flash Sale, digital product, activated product và đơn trước ngày hiệu lực v4.
+- Với route policy, gọi `search_kb` qua MCP và hợp nhất evidence không trùng.
+- Với Level 1-3, gọi `check_access_permission`; khi câu hỏi có timestamp ticket thì có thể gọi `get_ticket_info`.
+- Mọi call có `tool`, `input`, `output`, `error`, `timestamp` trong `mcp_tools_used`.
 
-### Synthesis Worker (`workers/synthesis.py`)
+### Synthesis worker (`workers/synthesis.py`)
 
-| Thuộc tính | Mô tả |
-|-----------|-------|
-| **LLM model** | ___________________ |
-| **Temperature** | ___________________ |
-| **Grounding strategy** | ___________________ |
-| **Abstain condition** | ___________________ |
+- Đọc `retrieved_chunks` và `policy_result`, không tự retrieve.
+- Prompt evidence-only, yêu cầu citation số `[1]`, `[2]` và abstain.
+- Tự nhận OpenAI/Gemini khi có key; nếu không có key dùng extractive fallback từ chính evidence.
+- Confidence dựa trên score evidence, policy decision và trạng thái abstain. Risk cao với confidence dưới 0,4 kích hoạt HITL trace.
 
-### MCP Server (`mcp_server.py`)
+### MCP server (`mcp_server.py`)
 
-| Tool | Input | Output |
-|------|-------|--------|
-| search_kb | query, top_k | chunks, sources |
-| get_ticket_info | ticket_id | ticket details |
-| check_access_permission | access_level, requester_role | can_grant, approvers |
-| ___________________ | ___________________ | ___________________ |
+| Tool | Input chính | Output |
+|---|---|---|
+| `search_kb` | `query`, `top_k` | chunks, sources, total_found |
+| `get_ticket_info` | `ticket_id` | ticket/SLA/notification mock có kiểm soát |
+| `check_access_permission` | level, role, emergency | approvers, override, notes |
+| `create_ticket` | priority, title, description | ticket mock deterministic |
 
----
+Đây là mức Standard in-process dispatcher theo rubric. `search_kb` dùng retrieval thật; khi retrieval lỗi, tool trả error và danh sách rỗng thay vì dựng evidence giả.
 
-## 4. Shared State Schema
+## 3. Shared state
 
-> Liệt kê các fields trong AgentState và ý nghĩa của từng field.
+| Nhóm field | Field tiêu biểu | Owner ghi |
+|---|---|---|
+| Input/route | `task`, `supervisor_route`, `route_reason`, `risk_high`, `needs_tool` | caller/supervisor |
+| Evidence | `retrieved_chunks`, `retrieved_sources` | retrieval/policy |
+| Policy/tool | `policy_result`, `mcp_tools_used` | policy worker |
+| Output | `final_answer`, `sources`, `confidence`, `hitl_triggered` | synthesis/HITL |
+| Trace | `run_id`, `timestamp`, `workers_called`, `worker_io_logs`, `history`, `latency_ms` | toàn graph |
 
-| Field | Type | Mô tả | Ai đọc/ghi |
-|-------|------|-------|-----------|
-| task | str | Câu hỏi đầu vào | supervisor đọc |
-| supervisor_route | str | Worker được chọn | supervisor ghi |
-| route_reason | str | Lý do route | supervisor ghi |
-| retrieved_chunks | list | Evidence từ retrieval | retrieval ghi, synthesis đọc |
-| policy_result | dict | Kết quả kiểm tra policy | policy_tool ghi, synthesis đọc |
-| mcp_tools_used | list | Tool calls đã thực hiện | policy_tool ghi |
-| final_answer | str | Câu trả lời cuối | synthesis ghi |
-| confidence | float | Mức tin cậy | synthesis ghi |
-| ___________________ | ___________________ | ___________________ | ___________________ |
+Contract chi tiết và trạng thái implementation nằm trong `contracts/worker_contracts.yaml`.
 
----
+## 4. Vì sao dùng Supervisor-Worker
 
-## 5. Lý do chọn Supervisor-Worker so với Single Agent (Day 08)
+| Tiêu chí | Single RAG Day 08 | Supervisor-Worker Day 09 |
+|---|---|---|
+| Xác định lỗi | Phải lần theo retrieval/generation | Trace chỉ rõ route, worker và I/O |
+| Policy exception | Nằm chung trong prompt | Worker/rule riêng, test độc lập |
+| External capability | Hard-code lời gọi | MCP dispatcher và schema |
+| Thay retrieval | Sửa pipeline chung | Thay retrieval worker |
+| Chi phí | Một generation call | Một generation call, cộng tool khi cần |
 
-| Tiêu chí | Single Agent (Day 08) | Supervisor-Worker (Day 09) |
-|----------|----------------------|--------------------------|
-| Debug khi sai | Khó — không rõ lỗi ở đâu | Dễ hơn — test từng worker độc lập |
-| Thêm capability mới | Phải sửa toàn prompt | Thêm worker/MCP tool riêng |
-| Routing visibility | Không có | Có route_reason trong trace |
-| ___________________ | ___________________ | ___________________ |
+## 5. Giới hạn
 
-**Nhóm điền thêm quan sát từ thực tế lab:**
-
-_________________
-
----
-
-## 6. Giới hạn và điểm cần cải tiến
-
-> Nhóm mô tả những điểm hạn chế của kiến trúc hiện tại.
-
-1. ___________________
-2. ___________________
-3. ___________________
+1. Routing hiện là rule-based; query dùng từ đồng nghĩa hoàn toàn mới có thể đi nhầm route.
+2. MCP là in-process mock ở mức Standard, chưa có transport, auth và timeout mạng.
+3. Confidence là heuristic, không phải xác suất đã hiệu chỉnh; HITL thật cần cơ chế pause/resume và người phê duyệt.
+4. Lần chạy đầu cần tải embedding model nếu máy chưa có cache.

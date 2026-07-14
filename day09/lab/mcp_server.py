@@ -20,18 +20,14 @@ Sử dụng:
     # Call a tool
     result = dispatch_tool("search_kb", {"query": "SLA P1", "top_k": 3})
 
-Sprint 3 TODO:
-    - Option Standard: Sử dụng file này as-is (mock class)
-    - Option Advanced: Implement HTTP server với FastAPI hoặc dùng `mcp` library
+Mức triển khai: MCP dispatcher in-process (mức Standard của bài lab).
 
 Chạy thử:
     python mcp_server.py
 """
 
-import os
-import json
-from datetime import datetime
-from typing import Any, Dict, List, Optional
+import hashlib
+from datetime import datetime, timezone
 
 
 # ─────────────────────────────────────────────
@@ -133,36 +129,24 @@ TOOL_SCHEMAS = {
 # ─────────────────────────────────────────────
 
 def tool_search_kb(query: str, top_k: int = 3) -> dict:
-    """
-    Tìm kiếm Knowledge Base bằng semantic search.
-
-    TODO Sprint 3: Kết nối với ChromaDB thực.
-    Hiện tại: Delegate sang retrieval worker.
-    """
+    """Tìm Knowledge Base bằng retrieval worker dùng ChromaDB thật."""
+    if not query.strip() or top_k < 1:
+        return {"error": "query phải khác rỗng và top_k phải >= 1"}
     try:
-        # Tái dùng retrieval logic từ workers/retrieval.py
-        import sys
-        sys.path.insert(0, os.path.dirname(__file__))
         from workers.retrieval import retrieve_dense
         chunks = retrieve_dense(query, top_k=top_k)
-        sources = list({c["source"] for c in chunks})
+        sources = list(dict.fromkeys(c["source"] for c in chunks))
         return {
             "chunks": chunks,
             "sources": sources,
             "total_found": len(chunks),
         }
     except Exception as e:
-        # Fallback: return mock data nếu ChromaDB chưa setup
         return {
-            "chunks": [
-                {
-                    "text": f"[MOCK] Không thể query ChromaDB: {e}. Kết quả giả lập.",
-                    "source": "mock_data",
-                    "score": 0.5,
-                }
-            ],
-            "sources": ["mock_data"],
-            "total_found": 1,
+            "error": f"KB search failed: {e}",
+            "chunks": [],
+            "sources": [],
+            "total_found": 0,
         }
 
 
@@ -260,14 +244,17 @@ def tool_create_ticket(priority: str, title: str, description: str = "") -> dict
     """
     Tạo ticket mới (MOCK — in log, không tạo thật).
     """
-    mock_id = f"IT-{9900 + hash(title) % 99}"
+    if priority not in {"P1", "P2", "P3", "P4"} or not title.strip():
+        return {"error": "priority phải thuộc P1-P4 và title không được rỗng"}
+    digest = int(hashlib.sha256(title.encode("utf-8")).hexdigest()[:8], 16)
+    mock_id = f"IT-{9900 + digest % 99}"
     ticket = {
         "ticket_id": mock_id,
         "priority": priority,
         "title": title,
         "description": description[:200],
         "status": "open",
-        "created_at": datetime.now().isoformat(),
+        "created_at": datetime.now(timezone.utc).isoformat(),
         "url": f"https://jira.company.internal/browse/{mock_id}",
         "note": "MOCK ticket — không tồn tại trong hệ thống thật",
     }
@@ -374,5 +361,4 @@ if __name__ == "__main__":
     err = dispatch_tool("nonexistent_tool", {})
     print(f"  Error: {err.get('error')}")
 
-    print("\n✅ MCP server test done.")
-    print("\nTODO Sprint 3: Implement HTTP server nếu muốn bonus +2.")
+    print("\nMCP server test done.")

@@ -1,0 +1,627 @@
+KIẾN THỨC CẦN CÓ CHO BÀI TẬP DAY 08, DAY 09, DAY 10
+====================================================
+
+1. Kiến thức Python nền tảng
+----------------------------
+
+Để làm bài lab này, cần nắm chắc các kỹ năng Python sau:
+
+- Đọc, ghi file UTF-8 bằng pathlib hoặc open(..., encoding="utf-8").
+- Làm việc với JSON, JSONL và CSV.
+- Dùng list, dict, set để biểu diễn state, metadata, row dữ liệu, trace.
+- Viết function có input/output rõ ràng.
+- Dùng type hints cơ bản như List, Dict, Any, Optional, TypedDict.
+- Xử lý exception để pipeline không crash mất kiểm soát.
+- Đọc biến môi trường bằng dotenv và os.getenv.
+- Dùng argparse để tạo command line entrypoint.
+- Tổ chức module Python theo thư mục, import giữa các file.
+- Ghi log ngắn gọn nhưng đủ bằng chứng: run_id, count, status, error reason.
+
+Với file tiếng Việt:
+
+- Luôn đọc/ghi bằng encoding="utf-8".
+- Khi ghi JSON có tiếng Việt, dùng ensure_ascii=False để không biến chữ có dấu thành chuỗi escape.
+- Không trộn lẫn dữ liệu tiếng Việt không dấu và có dấu nếu trường đó dùng để match keyword.
+
+
+2. Kiến thức RAG cho Day 08
+---------------------------
+
+2.1. Bản chất của RAG
+
+RAG là Retrieval-Augmented Generation:
+
+- Retrieval: tìm các đoạn tài liệu liên quan.
+- Augmentation: đưa các đoạn đó vào prompt làm context.
+- Generation: LLM trả lời dựa trên context.
+
+Mục tiêu không phải để LLM "nhớ" câu trả lời, mà để LLM trả lời có chứng cứ từ tài liệu nội bộ.
+
+2.2. Preprocessing
+
+Cần biết cách làm sạch văn bản trước khi index:
+
+- Bỏ header không cần thiết khỏi nội dung chính.
+- Chuẩn hóa khoảng trắng, dòng trống, ký tự lạ.
+- Tách metadata từ phần đầu tài liệu.
+- Giữ lại thông tin quan trọng như source, section, department, effective_date, access.
+
+Nếu preprocessing sai, các bước sau đều bị ảnh hưởng.
+
+2.3. Chunking
+
+Chunking là chia tài liệu thành các đoạn nhỏ để embed và retrieve.
+
+Kiến thức cần có:
+
+- Vì sao không nên embed cả tài liệu dài.
+- Vì sao không nên cắt ngang câu hoặc ngang điều khoản.
+- Chunk size và overlap ảnh hưởng thế nào đến recall và noise.
+- Split theo heading/section trước, sau đó mới split theo paragraph hoặc kích thước.
+- Mỗi chunk phải giữ metadata của tài liệu gốc.
+
+Trong bài này, chunk nên giữ các trường như:
+
+- source;
+- section;
+- effective_date;
+- department;
+- access.
+
+2.4. Embedding và vector database
+
+Cần hiểu:
+
+- Embedding biến text thành vector số.
+- Query và chunk dùng cùng một embedding model thì mới so sánh được.
+- ChromaDB lưu document, embedding và metadata.
+- Similarity search trả về các chunk gần query nhất.
+- Với cosine distance trong ChromaDB, có thể quy đổi score theo hướng 1 - distance.
+
+Model có thể dùng:
+
+- OpenAI text-embedding-3-small.
+- Sentence Transformers như all-MiniLM-L6-v2 hoặc model multilingual phù hợp.
+
+2.5. Retrieval strategies
+
+Cần phân biệt:
+
+- Dense retrieval: tốt cho tìm theo nghĩa, paraphrase, câu tự nhiên.
+- Sparse retrieval/BM25: tốt cho keyword, mã lỗi, tên riêng, mã chính sách.
+- Hybrid retrieval: kết hợp dense và sparse để tăng độ ổn định.
+- Rerank: lấy top-k rộng trước, sau đó chấm lại relevance để chọn ít chunk tốt nhất.
+- Query transformation: mở rộng query, tách query phức tạp hoặc xử lý alias/tên cũ.
+
+Trong bài Day 08, các query như "Approval Matrix" có thể cần hybrid hoặc query transformation vì tài liệu hiện tại có thể dùng tên "Access Control SOP".
+
+2.6. Grounded prompt
+
+Grounded prompt phải ép model:
+
+- chỉ trả lời từ retrieved context;
+- nếu thiếu dữ liệu thì nói không đủ thông tin;
+- gắn citation như [1], [2] hoặc tên nguồn;
+- trả lời ngắn, rõ và ổn định;
+- không tự thêm quy định, con số hoặc quy trình không có trong tài liệu.
+
+Đây là phần chống hallucination quan trọng nhất của RAG.
+
+2.7. RAG evaluation
+
+Cần biết các metric:
+
+- Faithfulness: answer có đúng với context không.
+- Answer Relevance: answer có trả lời đúng câu hỏi không.
+- Context Recall: retriever có lấy đúng nguồn kỳ vọng không.
+- Completeness: answer có đủ các ý quan trọng không.
+
+Nguyên tắc A/B:
+
+- Chỉ đổi một biến mỗi lần.
+- Ví dụ chỉ đổi retrieval_mode từ dense sang hybrid, giữ nguyên top_k và prompt.
+- Nếu đổi cùng lúc chunking, prompt, rerank và model thì không biết cải thiện đến từ đâu.
+
+
+3. Kiến thức Multi-Agent cho Day 09
+-----------------------------------
+
+3.1. Khi nào cần multi-agent
+
+Một single-agent dễ quá tải khi phải làm nhiều việc:
+
+- phân loại câu hỏi;
+- retrieve tài liệu;
+- kiểm tra chính sách;
+- gọi tool ngoài;
+- tổng hợp câu trả lời;
+- xử lý câu rủi ro cao;
+- ghi trace.
+
+Multi-agent giúp chia vai rõ ràng và debug từng bước.
+
+3.2. Supervisor-Worker pattern
+
+Cần hiểu:
+
+- Supervisor không trực tiếp làm mọi việc, mà quyết định route.
+- Worker làm một nhóm việc cụ thể.
+- Shared state chứa dữ liệu đi qua toàn graph.
+- route_reason phải giải thích được vì sao chọn worker.
+
+Trong repo:
+
+- supervisor_node() đọc task và đặt supervisor_route.
+- route_decision() trả về worker tiếp theo.
+- retrieval_worker tìm evidence.
+- policy_tool_worker xử lý policy và tool call.
+- synthesis_worker tổng hợp câu trả lời cuối.
+- human_review_node ghi checkpoint HITL vào trace khi cần người duyệt hoặc confidence thấp.
+
+3.3. AgentState
+
+AgentState là bộ nhớ chung của một run.
+
+Cần hiểu các trường quan trọng:
+
+- task: câu hỏi đầu vào.
+- supervisor_route: worker được chọn.
+- route_reason: lý do route.
+- risk_high: cờ rủi ro cao.
+- needs_tool: có cần gọi external tool không.
+- retrieved_chunks: evidence lấy được.
+- retrieved_sources: nguồn tài liệu.
+- policy_result: kết quả phân tích policy.
+- mcp_tools_used: danh sách tool MCP đã gọi.
+- final_answer: câu trả lời cuối.
+- confidence: độ tin cậy.
+- history: lịch sử xử lý.
+- workers_called: worker đã chạy.
+- latency_ms: thời gian xử lý.
+- run_id: mã định danh run.
+
+3.4. Worker contract
+
+Worker contract quy định:
+
+- input worker nhận là gì;
+- output worker phải trả là gì;
+- lỗi được biểu diễn ra sao;
+- log input/output đặt ở đâu.
+
+Lợi ích:
+
+- test worker độc lập;
+- thay worker không phá graph;
+- trace dễ đọc;
+- report cá nhân có bằng chứng rõ.
+
+3.5. MCP
+
+MCP trong bài này được dùng như chuẩn để agent gọi capability bên ngoài.
+
+Cần phân biệt:
+
+- MCP: agent gọi tool, API hoặc capability ngoài.
+- A2A: agent giao việc cho agent khác.
+
+Trong repo, mcp_server.py là mock MCP server với các tool:
+
+- search_kb;
+- get_ticket_info;
+- check_access_permission;
+- create_ticket.
+
+Policy worker gọi MCP qua _call_mcp_tool() và ghi kết quả vào mcp_tools_used.
+
+3.6. Trace và observability
+
+Trace không chỉ để debug, mà còn là deliverable chấm điểm.
+
+Trace tốt phải cho biết:
+
+- câu hỏi đầu vào;
+- supervisor route đi đâu;
+- route_reason là gì;
+- worker nào đã chạy;
+- MCP tool nào được gọi;
+- nguồn nào được retrieve;
+- answer cuối là gì;
+- confidence bao nhiêu;
+- có HITL không;
+- latency bao nhiêu.
+
+Nếu câu trả lời đúng nhưng trace thiếu route_reason, Day 09 vẫn bị mất điểm.
+
+
+4. Kiến thức Data Pipeline cho Day 10
+-------------------------------------
+
+4.1. Vì sao data pipeline quan trọng
+
+LLM và agent không tự biết dữ liệu trong vector store có:
+
+- cũ không;
+- sai version không;
+- thiếu nguồn không;
+- duplicate không;
+- bị schema drift không;
+- còn vector cũ sau publish không.
+
+Vì vậy Day 10 đặt pipeline dữ liệu trước model/prompt.
+
+4.2. ETL và ELT
+
+Cần hiểu:
+
+- ETL: Extract -> Transform -> Load.
+- ELT: Extract -> Load -> Transform.
+- Lab này thiên về ETL: raw CSV được clean và validate trước khi embed vào vector store.
+
+4.3. Ingestion
+
+Cần biết:
+
+- raw data có thể đến từ DB, API, PDF export hoặc CSV.
+- Mỗi record cần có doc_id, chunk_text, effective_date, exported_at.
+- Phải log raw_records để biết đầu vào bao nhiêu dòng.
+- Phải có source map và data contract để biết nguồn nào hợp lệ.
+
+4.4. Cleaning rules
+
+Cleaning rule là logic biến raw row thành cleaned row hoặc quarantine row.
+
+Cần biết cách xử lý:
+
+- doc_id không nằm trong allowlist;
+- effective_date rỗng;
+- effective_date sai định dạng;
+- dữ liệu stale theo ngày hiệu lực;
+- chunk_text rỗng;
+- duplicate chunk_text;
+- nội dung chính sách cũ nhưng ngày export mới;
+- nguồn hợp lệ bị thiếu trong allowlist.
+
+Trong Day 10, access_control_sop là nguồn cần chú ý vì câu hỏi eval có expect_top1_doc_id là access_control_sop.
+
+4.5. Quarantine
+
+Quarantine là nơi đưa dữ liệu bị loại để không làm bẩn index.
+
+Một quarantine row nên có:
+
+- dữ liệu gốc;
+- reason rõ ràng;
+- nếu cần, trường phụ như effective_date_raw hoặc effective_date_normalized.
+
+Quarantine không phải là "xóa mất dữ liệu", mà là giữ bằng chứng để debug và báo cáo.
+
+4.6. Data quality expectations
+
+Expectation là kiểm tra chất lượng dữ liệu như unit test cho data.
+
+Cần hiểu:
+
+- severity="halt": fail thì dừng pipeline.
+- severity="warn": fail thì cảnh báo.
+- expectation phải có tên rõ và detail đo được.
+
+Ví dụ expectation:
+
+- cleaned_rows phải có ít nhất một dòng.
+- doc_id không được rỗng.
+- effective_date phải đúng YYYY-MM-DD.
+- refund policy không được còn "14 ngày làm việc".
+- HR policy không được còn bản cũ "10 ngày phép năm" nếu đang kiểm tra annual leave 2026.
+
+4.7. Idempotency khi embed
+
+Pipeline tốt phải chạy lại nhiều lần mà không tạo rác.
+
+Cần hiểu:
+
+- chunk_id phải ổn định.
+- upsert dùng chunk_id để cập nhật thay vì chèn trùng.
+- prune id cũ để vector store là snapshot hiện tại, không lẫn vector stale.
+
+Nếu không prune, retrieval có thể vẫn lấy chunk cũ dù cleaned CSV đã đúng.
+
+4.8. Manifest và lineage
+
+Manifest ghi lại lineage của một run.
+
+Nên có:
+
+- run_id;
+- run_timestamp;
+- raw_path;
+- raw_records;
+- cleaned_records;
+- quarantine_records;
+- latest_exported_at;
+- published_at;
+- expectation results và quarantine reasons;
+- cleaned_csv;
+- chroma_path;
+- chroma_collection.
+
+Manifest giúp trả lời câu hỏi: câu trả lời này đến từ dữ liệu của run nào?
+
+4.9. Freshness
+
+Freshness đo dữ liệu có còn mới theo SLA hay không.
+
+Cần hiểu:
+
+- latest_exported_at là watermark của dữ liệu nguồn.
+- published_at là mốc snapshot được pipeline publish.
+- source_age_hours quyết định PASS/FAIL theo SLA; publish_age_hours giúp phân biệt upstream stale với pipeline ngừng chạy.
+- WARN nếu thiếu/sai timestamp hoặc timestamp nằm trong tương lai.
+
+Freshness FAIL không luôn đồng nghĩa code sai; có thể dữ liệu mẫu cố tình cũ. Quan trọng là runbook phải giải thích đúng.
+
+4.10. Before/after evidence
+
+Day 10 yêu cầu chứng minh dữ liệu sạch giúp retrieval tốt hơn.
+
+Cần có bằng chứng như:
+
+- eval trước khi fix có hits_forbidden=true hoặc top1_doc_expected=no;
+- eval sau khi fix có contains_expected=true, hits_forbidden=false;
+- quarantine_records thay đổi hợp lý;
+- expectation fail trước, pass sau;
+- run_id liên kết được với log, manifest, cleaned CSV và eval CSV.
+
+
+5. Kiến thức domain cần nắm
+---------------------------
+
+5.1. Refund policy
+
+Cần chú ý:
+
+- thời hạn hoàn tiền là 7 ngày làm việc;
+- không được để stale chunk nói 14 ngày làm việc;
+- Flash Sale là ngoại lệ;
+- license key, subscription, hàng kỹ thuật số là ngoại lệ;
+- sản phẩm đã kích hoạt hoặc đã sử dụng có thể không được hoàn tiền;
+- câu hỏi trước ngày hiệu lực chính sách v4 cần temporal scoping, không được tự bịa policy v3 nếu tài liệu không có.
+
+5.2. SLA P1
+
+Cần chú ý:
+
+- phản hồi ban đầu;
+- resolution time;
+- escalation sau khi không có phản hồi;
+- Slack channel, email, PagerDuty;
+- update định kỳ trong xử lý sự cố;
+- câu multi-hop có thể kết hợp SLA P1 với cấp quyền khẩn cấp.
+
+5.3. Access Control SOP
+
+Cần chú ý:
+
+- Level 2 và Level 3 có yêu cầu phê duyệt khác nhau.
+- Level 3/Admin Access thường cần nhiều bên phê duyệt hơn.
+- Trường hợp emergency không được tự suy diễn nếu SOP không cho phép.
+- Day 10 cần đảm bảo access_control_sop được ingest và embed, nếu không các câu access sẽ fail.
+
+5.4. IT Helpdesk FAQ
+
+Cần chú ý:
+
+- khóa tài khoản sau số lần đăng nhập sai;
+- chu kỳ đổi mật khẩu;
+- thời gian reset password;
+- giới hạn thiết bị VPN;
+- dung lượng email.
+
+5.5. HR Leave Policy
+
+Cần chú ý:
+
+- ngày phép theo thâm niên;
+- bản cũ có thể nói 10 ngày phép năm, bản đúng 2026 có thể khác;
+- probation period ảnh hưởng điều kiện remote;
+- cần phân biệt nghỉ phép năm với nghỉ ốm.
+
+
+6. Kiến thức đánh giá và báo cáo
+--------------------------------
+
+6.1. Scorecard
+
+Scorecard phải có số liệu, không chỉ nhận xét.
+
+Day 08 dùng scorecard cho RAG:
+
+- faithfulness;
+- relevance;
+- context recall;
+- completeness.
+
+Day 09 dùng trace metrics:
+
+- routing_distribution;
+- avg_confidence;
+- avg_latency_ms;
+- mcp_usage_rate;
+- hitl_rate;
+- source_coverage.
+
+Day 10 dùng retrieval/data metrics:
+
+- contains_expected;
+- hits_forbidden;
+- top1_doc_matches;
+- raw_records;
+- cleaned_records;
+- quarantine_records;
+- expectation pass/fail;
+- freshness PASS/WARN/FAIL.
+
+6.2. Grading log
+
+Cần biết format log:
+
+- Day 08 thường là JSON chứa answer, sources, chunks_retrieved, retrieval_mode, timestamp.
+- Day 09 là JSONL chứa answer, sources, supervisor_route, route_reason, workers_called, mcp_tools_used, confidence.
+- Day 10 là JSONL chứa top1_doc_id, contains_expected, hits_forbidden, top1_doc_matches.
+
+JSONL nghĩa là mỗi dòng là một JSON object hợp lệ.
+
+6.3. Báo cáo nhóm
+
+Báo cáo nhóm cần có:
+
+- kiến trúc hệ thống;
+- quyết định kỹ thuật;
+- bảng metric;
+- bằng chứng trước/sau;
+- lỗi đã gặp và cách sửa;
+- run_id hoặc trace/log liên quan.
+
+Không nên viết chung chung kiểu "nhóm em cải thiện pipeline". Cần chỉ rõ cải thiện bằng số liệu nào.
+
+6.4. Báo cáo cá nhân
+
+Báo cáo cá nhân cần khớp code, artifact và vai trò thật.
+
+Nên nêu:
+
+- file/function mình phụ trách;
+- quyết định kỹ thuật mình đưa ra;
+- một lỗi cụ thể đã phân tích hoặc sửa;
+- bằng chứng log/trace/CSV;
+- cải tiến cụ thể nếu có thêm thời gian.
+
+Không được nhận công lao phần người khác làm, vì rubric có phần kiểm tra sự khớp giữa report và repo.
+
+
+7. Thứ tự debug nên dùng
+------------------------
+
+7.1. Day 08 - RAG
+
+Nếu answer sai, kiểm tra theo thứ tự:
+
+1. Indexing:
+   - tài liệu có được đọc không;
+   - chunk có hợp lý không;
+   - metadata có đủ không;
+   - effective_date có đúng không.
+
+2. Retrieval:
+   - expected source có nằm trong top-k không;
+   - dense có bỏ sót keyword không;
+   - có cần hybrid/rerank/query transform không.
+
+3. Generation:
+   - prompt có ép evidence-only không;
+   - answer có citation không;
+   - câu thiếu context có abstain không.
+
+4. Evaluation:
+   - scorecard có phản ánh lỗi thật không;
+   - A/B có chỉ đổi một biến không.
+
+7.2. Day 09 - Multi-Agent
+
+Nếu answer sai, kiểm tra theo thứ tự:
+
+1. Routing:
+   - supervisor_route đúng chưa;
+   - route_reason có dựa trên signal thật không.
+
+2. Worker:
+   - worker input/output có khớp contract không;
+   - worker_io_logs có lỗi không;
+   - retrieval_worker có trả chunks không;
+   - policy_tool_worker có phát hiện exception không.
+
+3. MCP:
+   - tool nào được gọi;
+   - input tool đúng schema không;
+   - output tool có lỗi không.
+
+4. Synthesis:
+   - context đưa vào có đủ không;
+   - final_answer có bám context không;
+   - confidence có hợp lý không.
+
+7.3. Day 10 - Data Pipeline
+
+Nếu retrieval/eval sai, kiểm tra theo thứ tự:
+
+1. Freshness/version:
+   - manifest có timestamp không;
+   - data có stale không;
+   - đúng version policy chưa.
+
+2. Volume/errors:
+   - raw_records, cleaned_records, quarantine_records có bất thường không.
+
+3. Schema/contract:
+   - doc_id có nằm trong allowlist không;
+   - effective_date đúng format không;
+   - source map có đủ không.
+
+4. Lineage/run_id:
+   - eval đang dùng collection của run nào;
+   - cleaned CSV nào được embed;
+   - vector cũ có bị prune không.
+
+5. Retrieval/model:
+   - top1_doc_id đúng không;
+   - hits_forbidden có false không;
+   - contains_expected có true không.
+
+
+8. Checklist tối thiểu để làm tốt bài
+-------------------------------------
+
+Day 08:
+
+- Implement được embedding và ChromaDB indexing.
+- Retrieve được expected source cho câu hỏi mẫu.
+- Answer có citation và biết abstain.
+- Có baseline và variant.
+- Có scorecard và tuning log.
+
+Day 09:
+
+- Supervisor route được ít nhất hai loại task.
+- Worker test độc lập được.
+- Policy worker xử lý ít nhất một exception.
+- MCP mock tool được gọi và trace lại.
+- eval_trace tạo trace đầy đủ.
+- Có so sánh single-agent với multi-agent bằng metric.
+
+Day 10:
+
+- Pipeline clean/validate/embed có run_id.
+- Cleaning rules xử lý nguồn thiếu, dữ liệu stale và duplicate.
+- Expectations có warn/halt rõ ràng.
+- Quarantine có reason.
+- Embed idempotent và prune vector cũ.
+- Manifest và freshness check có thể giải thích.
+- Eval before/after chứng minh dữ liệu sạch tốt hơn.
+- access_control_sop được xử lý đúng nếu câu hỏi grading yêu cầu.
+
+
+9. Tư duy quan trọng nhất
+-------------------------
+
+Bài này kiểm tra tư duy hệ thống hơn là chỉ viết code chạy được.
+
+Cần luôn tự hỏi:
+
+- Dữ liệu này đến từ đâu?
+- Nó có đúng phiên bản không?
+- Nếu agent trả lời sai, sai ở retrieval, routing, policy, synthesis hay data?
+- Có log/trace nào chứng minh không?
+- Có metric nào cho thấy thay đổi của mình tốt hơn không?
+- Nếu không có thông tin trong tài liệu, hệ có dám abstain không?
+
+Một hệ AI tốt trong bài này là hệ có thể giải thích được đường đi của câu trả lời: từ raw data, qua cleaning, qua vector index, qua retrieval, qua worker, tới final answer.

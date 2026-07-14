@@ -5,6 +5,8 @@
 **Thời gian:** 4 giờ (4 sprints x 60 phút)  
 **Tiếp nối:** Day 08 — RAG Pipeline → Day 09 — Orchestration Layer
 
+> **Trạng thái workspace:** supervisor, workers, MCP và trace/eval đã hoàn thiện; các checklist sprint bên dưới là rubric đối chiếu. Artifact chỉ được tạo khi người học tự chạy.
+
 ---
 
 ## Bối cảnh
@@ -94,30 +96,16 @@ cp .env.example .env
 # Điền OPENAI_API_KEY hoặc GOOGLE_API_KEY
 ```
 
-### 3. Build index từ Day 08 (nếu chưa có)
-```bash
-# Copy ChromaDB index từ Day 08, hoặc chạy lại:
-python -c "
-import chromadb, os
-from sentence_transformers import SentenceTransformer
+### 3. Build index
 
-client = chromadb.PersistentClient(path='./chroma_db')
-col = client.get_or_create_collection('day09_docs')
-model = SentenceTransformer('all-MiniLM-L6-v2')
-
-docs_dir = './data/docs'
-for fname in os.listdir(docs_dir):
-    with open(os.path.join(docs_dir, fname)) as f:
-        content = f.read()
-    print(f'Indexed: {fname}')
-print('Index ready.')
-"
-```
+Không cần script riêng. `workers/retrieval.py` tự chunk đủ năm tài liệu, upsert snapshot `day09_docs` và prune ID cũ ở lần retrieval đầu tiên. Model và đường dẫn lấy từ `.env`.
 
 ### 4. Kiểm tra setup
 ```bash
 python graph.py  # Chạy 1 test query cơ bản
 ```
+
+Không có LLM key vẫn chạy được bằng extractive fallback; MCP ở mức Standard in-process theo rubric và mọi tool call đều được ghi trace.
 
 ---
 

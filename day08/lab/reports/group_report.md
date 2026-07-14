@@ -1,145 +1,40 @@
-# Báo Cáo Nhóm — Lab Day 08: Full RAG Pipeline
+# Báo cáo nhóm - Day 08
 
-**Tên nhóm:** ___________  
-**Thành viên:**
-| Tên | Vai trò | Email |
-|-----|---------|-------|
-| ___ | Tech Lead | ___ |
-| ___ | Retrieval Owner | ___ |
-| ___ | Eval Owner | ___ |
-| ___ | Documentation Owner | ___ |
+> Nhóm tự điền tên nhóm, thành viên, vai trò, email, ngày nộp và repo. Các trường này không được tự sinh vì phải khớp đóng góp/commit thật.
 
-**Ngày nộp:** ___________  
-**Repo:** ___________  
-**Độ dài khuyến nghị:** 600–900 từ
+## 1. Pipeline
 
----
+Pipeline lập chỉ mục năm tài liệu CS/IT bằng chunk theo heading, paragraph và sentence; chunk size 400 token ước lượng, overlap 80. Metadata gồm source, section, department, effective date, access và chunk index. Embedding mặc định là `paraphrase-multilingual-MiniLM-L12-v2`; collection Chroma `rag_lab` upsert bằng stable hash ID và prune vector cũ.
 
-> **Hướng dẫn nộp group report:**
->
-> - File này nộp tại: `reports/group_report.md`
-> - Deadline: Được phép commit **sau 18:00** (xem SCORING.md)
-> - Tập trung vào **quyết định kỹ thuật cấp nhóm** — không trùng lặp với individual reports
-> - Phải có **bằng chứng từ code, scorecard, hoặc tuning log** — không mô tả chung chung
+Retrieval baseline là dense, variant là hybrid dense + BM25 + RRF. Generation evidence-only, bắt buộc citation và abstain. Khi chưa có API key, extractive fallback chỉ lấy dòng trong evidence, không dùng kiến thức ngoài.
 
----
+## 2. Quyết định kỹ thuật
 
-## 1. Pipeline nhóm đã xây dựng (150–200 từ)
+Quyết định chính là chọn hybrid làm đúng một biến A/B. Dense phù hợp paraphrase nhưng dễ hụt exact term/alias như `Approval Matrix`, `P1`, `Level 3` và email. BM25 mạnh ở exact term nhưng có thể thêm noise; vì vậy RRF dùng trọng số dense 0,6 và sparse 0,4, giữ độ phủ domain suy ra từ query, đồng thời giữ nguyên top-k, prompt, chunking và rerank để delta có thể quy cho retrieval mode.
 
-> Mô tả ngắn gọn pipeline của nhóm:
-> - Chunking strategy: size, overlap, phương pháp tách (by paragraph, by section, v.v.)
-> - Embedding model đã dùng
-> - Retrieval mode: dense / hybrid / rerank (Sprint 3 variant)
+Các phương án không chọn trong cùng thí nghiệm là bật rerank hoặc query transformation. Hai phần đã có implementation để thử tiếp, nhưng bật đồng thời sẽ vi phạm A/B rule.
 
-**Chunking decision:**
-> VD: "Nhóm dùng chunk_size=500, overlap=50, tách theo section headers vì tài liệu có cấu trúc rõ ràng."
+<!-- AUTO_DAY08_RESULTS_START -->
+Chưa có scorecard runtime. Chạy `python index.py`, sau đó `python eval.py`.
+<!-- AUTO_DAY08_RESULTS_END -->
 
-_________________
+## 3. Grading và abstain
 
-**Embedding model:**
+`eval.py --grading <path>` tạo `logs/grading_run.json` đúng format câu hỏi, answer, sources, chunks, retrieval mode và timestamp. Điểm raw/criteria chỉ được điền sau khi grading questions được công bố và log đã được người học kiểm tra.
 
-_________________
+Câu không có evidence như `ERR-403-AUTH` bị chặn trước generation. Nếu grading hỏi mức phạt không tồn tại, tín hiệu “phạt/penalty” cũng yêu cầu xuất hiện trực tiếp trong context; nếu không hệ abstain, tránh penalty hallucination.
 
-**Retrieval variant (Sprint 3):**
-> Nêu rõ variant đã chọn (hybrid / rerank / query transform) và lý do ngắn gọn.
+## 4. Cách đọc A/B
 
-_________________
+- Ưu tiên không regression ở abstain và faithfulness.
+- Context recall cho biết lỗi retrieval; completeness/relevance phản ánh answer cuối.
+- Nếu hybrid tăng recall nhưng giảm faithfulness, xem top-k noise trước khi sửa prompt.
+- Chỉ chọn variant nếu bằng chứng trong `tuning-log.md` và scorecard cùng ủng hộ.
 
----
+## 5. Phân công và báo cáo cá nhân
 
-## 2. Quyết định kỹ thuật quan trọng nhất (200–250 từ)
+Mỗi thành viên phải tự ghi file/function đã làm, quyết định kỹ thuật và một câu grading từ output thật. Không dùng nội dung báo cáo này để nhận thay đóng góp; tên/role/commit evidence cần được nhóm xác nhận trước khi nộp.
 
-> Chọn **1 quyết định thiết kế** mà nhóm thảo luận và đánh đổi nhiều nhất trong lab.
-> Phải có: (a) vấn đề gặp phải, (b) các phương án cân nhắc, (c) lý do chọn.
+## 6. Cải tiến tiếp theo
 
-**Quyết định:** ___________________
-
-**Bối cảnh vấn đề:**
-
-_________________
-
-**Các phương án đã cân nhắc:**
-
-| Phương án | Ưu điểm | Nhược điểm |
-|-----------|---------|-----------|
-| ___ | ___ | ___ |
-| ___ | ___ | ___ |
-
-**Phương án đã chọn và lý do:**
-
-_________________
-
-**Bằng chứng từ scorecard/tuning-log:**
-
-_________________
-
----
-
-## 3. Kết quả grading questions (100–150 từ)
-
-> Sau khi chạy pipeline với grading_questions.json (public lúc 17:00):
-> - Câu nào pipeline xử lý tốt nhất? Tại sao?
-> - Câu nào pipeline fail? Root cause ở đâu (indexing / retrieval / generation)?
-> - Câu gq07 (abstain) — pipeline xử lý thế nào?
-
-**Ước tính điểm raw:** ___ / 98
-
-**Câu tốt nhất:** ID: ___ — Lý do: ___________________
-
-**Câu fail:** ID: ___ — Root cause: ___________________
-
-**Câu gq07 (abstain):** ___________________
-
----
-
-## 4. A/B Comparison — Baseline vs Variant (150–200 từ)
-
-> Dựa vào `docs/tuning-log.md`. Tóm tắt kết quả A/B thực tế của nhóm.
-
-**Biến đã thay đổi (chỉ 1 biến):** ___________________
-
-| Metric | Baseline | Variant | Delta |
-|--------|---------|---------|-------|
-| ___ | ___ | ___ | ___ |
-| ___ | ___ | ___ | ___ |
-
-**Kết luận:**
-> Variant tốt hơn hay kém hơn? Ở điểm nào?
-
-_________________
-
----
-
-## 5. Phân công và đánh giá nhóm (100–150 từ)
-
-> Đánh giá trung thực về quá trình làm việc nhóm.
-
-**Phân công thực tế:**
-
-| Thành viên | Phần đã làm | Sprint |
-|------------|-------------|--------|
-| ___ | ___________________ | ___ |
-| ___ | ___________________ | ___ |
-| ___ | ___________________ | ___ |
-| ___ | ___________________ | ___ |
-
-**Điều nhóm làm tốt:**
-
-_________________
-
-**Điều nhóm làm chưa tốt:**
-
-_________________
-
----
-
-## 6. Nếu có thêm 1 ngày, nhóm sẽ làm gì? (50–100 từ)
-
-> 1–2 cải tiến cụ thể với lý do có bằng chứng từ scorecard.
-
-_________________
-
----
-
-*File này lưu tại: `reports/group_report.md`*  
-*Commit sau 18:00 được phép theo SCORING.md*
+Thí nghiệm kế tiếp nên giữ hybrid và chỉ bật rerank để đo tác động giảm noise. Ngoài ra có thể instrument latency/token cost và thay heuristic score bằng evaluator đã hiệu chỉnh trên một tập chấm tay nhỏ.

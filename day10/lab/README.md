@@ -7,6 +7,8 @@
 
 **Slide:** [`../lecture-10.html`](../lecture-10.html)
 
+> **Trạng thái workspace:** phần pipeline đã được hoàn thiện: đủ năm source, version/semantic cleaning, expectation halt/warn, idempotent publish, hybrid eval và báo cáo runtime tự động. Artifact số liệu chỉ xuất hiện sau khi người học tự chạy các lệnh bên dưới.
+
 ---
 
 ## Bối cảnh

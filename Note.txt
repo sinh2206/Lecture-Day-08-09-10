@@ -1,0 +1,297 @@
+HƯỚNG DẪN CHẠY VÀ KIỂM CHỨNG BÀI TẬP DAY 08 - DAY 09 - DAY 10
+================================================================
+
+1. Trạng thái bàn giao
+----------------------
+
+Mã nguồn và tài liệu kỹ thuật của ba lab đã được hoàn thiện. Bạn tự chạy toàn bộ
+lệnh bên dưới để tạo ChromaDB, scorecard, trace, manifest, CSV và JSONL trên máy
+của mình. Repo không điền sẵn số liệu runtime để tránh dùng bằng chứng giả.
+
+Thứ tự khuyến nghị:
+
+    Day 08: index -> RAG -> A/B evaluation -> grading log
+    Day 09: supervisor/workers -> trace -> comparison -> grading JSONL
+    Day 10: corrupt run -> before eval -> clean run -> after eval -> grading JSONL
+
+Không chỉnh các vùng nằm giữa cặp marker AUTO_* trong tài liệu. Script đánh giá
+sẽ tự cập nhật các vùng này từ artifact thật.
+
+
+2. Chuẩn bị môi trường
+----------------------
+
+Dùng Python 3.10 trở lên. Mở PowerShell tại thư mục gốc repo rồi tự chạy:
+
+    python -m venv .venv
+    .\.venv\Scripts\Activate.ps1
+    python -m pip install --upgrade pip
+    python -m pip install -r .\day08\lab\requirements.txt
+    python -m pip install -r .\day09\lab\requirements.txt
+    python -m pip install -r .\day10\lab\requirements.txt
+
+Nếu PowerShell không cho activate, có thể gọi trực tiếp:
+
+    .\.venv\Scripts\python.exe <tệp_python> <tham_số>
+
+Mỗi lab có `.env.example`. Chỉ tạo `.env` nếu chưa có để không ghi đè khóa cũ.
+Embedding dùng Sentence Transformers local; lần đầu có thể phải tải model. API key
+OpenAI/Gemini là tùy chọn vì Day 08 và Day 09 có fallback trích xuất có căn cứ.
+
+
+3. Day 08 - Full RAG Pipeline
+-----------------------------
+
+3.1. Cấu hình
+
+    Set-Location .\day08\lab
+    if (-not (Test-Path .env)) { Copy-Item .env.example .env }
+
+Trong `.env`, có thể để trống `OPENAI_API_KEY` và `GOOGLE_API_KEY`. Không đổi
+`EMBEDDING_MODEL` sau khi đã index; nếu đổi model phải tạo lại ChromaDB tương ứng.
+
+3.2. Lập chỉ mục
+
+    python index.py
+
+`index.py` thực hiện:
+
+- đọc đủ 5 tệp trong `data/docs` và lấy source, department, effective_date, access;
+- chia theo heading, đoạn/câu, giới hạn xấp xỉ 400 token và overlap 80 token;
+- tạo embedding đa ngôn ngữ bằng cùng một model cho document và query;
+- tạo ID SHA-256 ổn định, upsert vào collection `rag_lab` và xóa vector cũ;
+- in số chunk, mẫu metadata và độ phủ effective_date để bạn kiểm tra.
+
+Kết quả mong đợi: thư mục `chroma_db` xuất hiện, collection không rỗng và mỗi
+chunk có ít nhất source, section, effective_date.
+
+3.3. Thử câu trả lời
+
+    python rag_answer.py
+
+Hoặc hỏi một câu riêng:
+
+    python -c "from rag_answer import rag_answer; print(rag_answer('SLA xử lý ticket P1 là bao lâu?', retrieval_mode='hybrid'))"
+
+`rag_answer.py` hỗ trợ dense, BM25 và hybrid RRF. Hybrid giữ độ phủ nguồn theo
+domain suy ra từ query để câu multi-document không bị một nguồn chiếm hết top-k.
+Luồng chuẩn tiếp tục dựng context [1], [2] rồi sinh câu trả lời evidence-only.
+Query về dữ kiện không có, như mức phạt SLA hoặc `ERR-403-AUTH`, phải abstain thay
+vì bịa số liệu.
+
+3.4. Tạo scorecard A/B
+
+    python eval.py
+
+Thí nghiệm chỉ đổi một biến:
+
+    baseline = dense
+    variant  = hybrid dense + BM25
+
+Các đầu ra cần đọc:
+
+- `results/scorecard_baseline.md`: điểm từng câu của baseline;
+- `results/scorecard_variant.md`: điểm từng câu của variant;
+- `results/ab_comparison.csv`: dữ liệu chi tiết để đối chiếu;
+- `docs/tuning-log.md`: bảng delta được script cập nhật;
+- `reports/group_report.md`: vùng kết quả runtime được cập nhật cùng lúc.
+
+Faithfulness, relevance và completeness hiện là heuristic token coverage, không
+phải LLM-as-Judge. Vì vậy phải đọc lại các câu có điểm thấp trước khi kết luận.
+
+3.5. Chạy bộ câu hỏi chấm khi được công bố
+
+Đặt file tại `data/grading_questions.json`, sau đó chạy:
+
+    python eval.py --grading data/grading_questions.json
+
+Kiểm tra `logs/grading_run.json`: đủ số câu, có answer, sources,
+chunks_retrieved, retrieval_mode và timestamp. Không sửa log bằng số liệu tự nghĩ.
+
+
+4. Day 09 - Multi-Agent Orchestration
+--------------------------------------
+
+4.1. Cấu hình
+
+    Set-Location ..\..\day09\lab
+    if (-not (Test-Path .env)) { Copy-Item .env.example .env }
+
+Day 09 tự index 5 tài liệu vào collection `day09_docs` trong lần retrieval đầu;
+không cần chạy script setup riêng.
+
+4.2. Kiểm tra từng capability
+
+    python -m workers.retrieval
+    python -m workers.policy_tool
+    python -m workers.synthesis
+    python mcp_server.py
+
+Ý nghĩa:
+
+- Retrieval Worker tạo/query ChromaDB, giữ độ phủ nguồn theo domain của task và trả chunk, source, score, worker log.
+- Policy & Tool Worker nhận diện refund exception, temporal scoping, access rule;
+  mọi tool call có input, output/error và timestamp.
+- Synthesis Worker chỉ tổng hợp evidence, thêm citation, confidence và abstain.
+- MCP dispatcher có `search_kb`, `get_ticket_info`, `check_access_permission`,
+  `create_ticket`; `search_kb` gọi retrieval thật.
+
+4.3. Chạy graph
+
+    python graph.py
+
+Supervisor chỉ quyết định route và risk, không tự trả lời kiến thức nghiệp vụ.
+Mọi route đều đi qua retrieval; policy/access route gọi thêm Policy Tool Worker;
+cuối cùng Synthesis Worker tạo câu trả lời. HITL được ghi vào trace nếu route yêu
+cầu người duyệt hoặc task rủi ro có confidence dưới 0,4.
+
+Mỗi trace phải có: supervisor_route, route_reason, workers_called,
+worker_io_logs, mcp_tools_used, confidence, hitl_triggered và latency_ms.
+
+4.4. Chạy 15 câu test và phân tích trace
+
+    python eval_trace.py
+    python eval_trace.py --analyze
+
+Đầu ra:
+
+- `artifacts/traces/*.json`: state và lịch sử từng câu;
+- `artifacts/eval_report.json`: routing accuracy, answer match, source recall,
+  latency, MCP/HITL/abstain rate;
+- `docs/routing_decisions.md`: ít nhất ba quyết định lấy từ trace thật;
+- `docs/single_vs_multi_comparison.md`: so sánh Day 08/09 từ artifact hiện có;
+- `reports/group_report.md`: vùng metric tự động.
+
+Muốn chỉ tạo lại phần so sánh với file Day 08 cụ thể:
+
+    python eval_trace.py --compare --day08-results ..\..\day08\lab\results\ab_comparison.csv
+
+4.5. Chạy grading
+
+Khi có `data/grading_questions.json`:
+
+    python eval_trace.py --grading
+
+Kiểm tra `artifacts/grading_run.jsonl`: mỗi dòng phải là một JSON object hợp lệ,
+có route_reason và workers_called. Với câu multi-hop, sources phải chứa cả SLA và
+Access Control; với câu hỏi mức phạt, answer phải abstain.
+
+
+5. Day 10 - Data Pipeline và Observability
+-------------------------------------------
+
+5.1. Cấu hình
+
+    Set-Location ..\..\day10\lab
+    if (-not (Test-Path .env)) { Copy-Item .env.example .env }
+
+Các cutoff version nằm trong `.env`, không hard-code tại nơi chạy. Allowlist đã có
+đủ 5 nguồn, gồm `access_control_sop`.
+
+5.2. Tạo bằng chứng before có chủ đích
+
+    python etl_pipeline.py run --run-id before-fix --no-refund-fix --skip-validate
+    python eval_retrieval.py --out artifacts\eval\before_fix.csv
+
+`--no-refund-fix` cố ý giữ cửa sổ 14 ngày. Expectation halt sẽ fail;
+`--skip-validate` chỉ được dùng cho run này để tạo bằng chứng corruption. Không dùng
+hai cờ trên cho pipeline chuẩn.
+
+5.3. Chạy pipeline chuẩn và after eval
+
+    python etl_pipeline.py run --run-id after-fix
+    python eval_retrieval.py --out artifacts\eval\after_fix.csv
+
+Pipeline chuẩn thực hiện:
+
+- ingest raw CSV với UTF-8;
+- chuẩn hóa Unicode, ngày hiệu lực, exported_at và nội dung;
+- quarantine doc lạ, ngày sai/cũ, nội dung rỗng/mơ hồ, HR stale và duplicate;
+- sửa refund 14 thành 7 ngày, tạo stable chunk_id;
+- chạy expectation halt/warn;
+- upsert snapshot vào `day10_kb`, đồng thời prune vector không còn hợp lệ;
+- ghi log, cleaned CSV, quarantine CSV, manifest và freshness hai mốc.
+
+So sánh hai CSV tại dòng `q_refund_window`:
+
+    before: hits_forbidden dự kiến true hoặc contains_expected không đạt
+    after:  contains_expected=true, hits_forbidden=false
+
+Đọc thêm các câu HR và Access Control để xác nhận top1 lần lượt là
+`hr_leave_policy` và `access_control_sop`.
+
+5.4. Kiểm tra idempotency và freshness
+
+Bạn có thể chạy lại pipeline chuẩn với run_id khác:
+
+    python etl_pipeline.py run --run-id after-fix-rerun
+
+Đối chiếu log: số cleaned ổn định, `embed_upsert` không làm collection phình và
+`embed_prune_removed` chỉ xuất hiện khi snapshot trước có ID không còn hợp lệ.
+
+Kiểm tra một manifest cụ thể:
+
+    python etl_pipeline.py freshness --manifest artifacts\manifests\manifest_after-fix.json
+
+Raw mẫu có exported_at cũ nên freshness có thể trả FAIL và exit code 1. Đây là tín
+hiệu dữ liệu nguồn stale, không đồng nghĩa ETL chuẩn bị crash; ghi nhận đúng trong
+runbook/report thay vì sửa timestamp để làm đẹp kết quả.
+
+5.5. Chạy grading
+
+Khi giảng viên cung cấp `data/grading_questions.json`:
+
+    python grading_run.py
+
+Kiểm tra `artifacts/eval/grading_run.jsonl`: đúng số dòng, contains_expected=true,
+hits_forbidden=false; các câu có expect_top1_doc_id phải có top1_doc_matches=true.
+
+`eval_retrieval.py` chỉ dùng expected fields sau retrieval để chấm. Xếp hạng được
+tạo từ semantic similarity, lexical coverage và domain signal suy ra từ câu hỏi,
+không dùng đáp án kỳ vọng để chọn document.
+
+
+6. Cách đọc artifact và hoàn thiện báo cáo
+------------------------------------------
+
+Day 08:
+    Dùng scorecard và `ab_comparison.csv` để ghi delta thật cho dense/hybrid.
+
+Day 09:
+    Dùng ít nhất ba trace để giải thích task -> route_reason -> workers -> result.
+    Chỉ so sánh latency/chất lượng khi hai phía có metric tương thích.
+
+Day 10:
+    Dùng cùng run_id để nối log, cleaned, quarantine, manifest và eval CSV.
+    Bảng metric_impact phải nêu rule nào đổi quarantine/expectation/eval nào.
+
+Các file report nhóm đã có phần kiến trúc và marker runtime. Sau khi chạy, kiểm tra
+marker đã có số liệu rồi bổ sung tên nhóm, thành viên và diễn giải dựa trên artifact.
+
+Không tạo sẵn report cá nhân bằng thông tin giả. Mỗi thành viên tự tạo file trong
+`reports/individual`: Day 08/09 dài 500-800 từ, Day 10 dài 400-650 từ, gồm:
+
+- file/function thực sự phụ trách;
+- một quyết định kỹ thuật và trade-off;
+- một lỗi/anomaly cùng evidence trước/sau;
+- run_id hoặc trace/CSV cụ thể;
+- một cải tiến khả thi nếu có thêm thời gian.
+
+
+7. Checklist cuối
+-----------------
+
+- Day 08 index có đủ 5 nguồn; answer có citation; câu thiếu dữ kiện abstain.
+- Day 08 baseline/variant chỉ khác retrieval_mode và có scorecard thật.
+- Day 09 có đủ 15 trace, route_reason rõ, MCP envelope và worker log.
+- Day 09 câu multi-hop gọi retrieval + policy + synthesis và có đủ nguồn.
+- Day 10 run chuẩn không dùng skip validate; đủ 5 doc_id sau clean.
+- Day 10 có before/after CSV, manifest, quarantine reasons và freshness detail.
+- Grading JSON/JSONL đủ số câu, parse được, có timestamp và không chứa số liệu bịa.
+- Báo cáo nhóm/cá nhân khớp code, commit và artifact thực tế.
+- `git status --short` thấy artifact cần nộp nhưng không thấy `.env` hoặc `chroma_db`.
+
+Nếu đổi embedding model hoặc collection, phải dùng database/collection mới hoặc tự
+xóa artifact index cũ trước khi rebuild; không trộn vector khác kích thước trong cùng
+collection. Luôn đọc `SCORING.md` của từng lab trước khi nộp vì deadline và độ dài
+report cá nhân khác nhau giữa Day 08, Day 09 và Day 10.

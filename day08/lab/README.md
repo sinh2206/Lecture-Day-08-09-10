@@ -4,6 +4,8 @@
 **Chủ đề:** RAG Pipeline: Indexing → Retrieval → Generation → Evaluation  
 **Thời gian:** 4 giờ (4 sprints x 60 phút)
 
+> **Trạng thái workspace:** code và tài liệu kỹ thuật đã hoàn thiện; các checklist sprint bên dưới là rubric đối chiếu. Scorecard và grading log chỉ được tạo khi người học tự chạy.
+
 ---
 
 ## Bối cảnh
@@ -72,10 +74,12 @@ cp .env.example .env
 # Điền OPENAI_API_KEY hoặc GOOGLE_API_KEY
 ```
 
-### 3. Test setup
+### 3. Build index
 ```bash
-python index.py    # Xem preview preprocess + chunking (không cần API key)
+python index.py    # Preprocess, chunk, embed, upsert và kiểm tra metadata
 ```
+
+Implementation hiện dùng Sentence Transformers local nên không cần API key cho indexing; lần đầu có thể tải model. Nếu không cấu hình LLM key, generation dùng extractive fallback có citation và không dùng kiến thức ngoài context.
 
 ---
 
@@ -86,7 +90,7 @@ python index.py    # Xem preview preprocess + chunking (không cần API key)
 
 **Việc phải làm:**
 1. Implement `get_embedding()` — chọn OpenAI hoặc Sentence Transformers
-2. Implement phần TODO trong `build_index()` — embed và upsert vào ChromaDB
+2. `build_index()` embed, upsert idempotent và prune chunk cũ trong ChromaDB
 3. Chạy `build_index()` và kiểm tra với `list_chunks()`
 
 **Definition of Done:**

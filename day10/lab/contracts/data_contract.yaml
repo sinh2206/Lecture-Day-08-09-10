@@ -1,9 +1,8 @@
-# Data contract — Lab Day 10 (tiếp nối artifact CS + IT Helpdesk)
-# Sinh viên bổ sung owner, SLA freshness, và nguồn canonical.
+# Data contract — Lab Day 10 (artifact CS + IT Helpdesk đã hoàn thiện)
 
 version: "1.0"
 dataset: "kb_chunk_export"
-owner_team: "__TODO__"
+owner_team: "AI Platform & Knowledge Operations"
 
 schema_cleaned:
   chunk_id:
@@ -28,15 +27,25 @@ schema_cleaned:
 
 quality_rules:
   - id: "no_duplicate_chunk_text"
-    severity: "warn"
+    severity: "halt"
   - id: "no_stale_refund_window"
     description: "Không được để chunk policy refund chứa cửa sổ 14 ngày (lệch so với v4 = 7 ngày)"
     severity: "halt"
+  - id: "all_required_doc_ids_present"
+    description: "Snapshot publish phải chứa đủ 5 nguồn canonical"
+    severity: "halt"
+  - id: "exported_at_iso"
+    description: "Mọi record phải có exported_at parse được theo ISO-8601"
+    severity: "halt"
+  - id: "no_ambiguous_content_marker"
+    description: "Không publish record có marker 'Nội dung không rõ ràng'"
+    severity: "warn"
 
 freshness:
-  measured_at: "publish"  # ingest | cleaned | publish
+  measured_boundaries: ["source_export", "publish"]
+  status_boundary: "source_export"
   sla_hours: 24
-  alert_channel: "__TODO__"
+  alert_channel: "#data-observability"
 
 canonical_sources:
   - path: "data/docs/policy_refund_v4.txt"
@@ -47,14 +56,21 @@ canonical_sources:
     doc_id: "it_helpdesk_faq"
   - path: "data/docs/hr_leave_policy.txt"
     doc_id: "hr_leave_policy"
+  - path: "data/docs/access_control_sop.txt"
+    doc_id: "access_control_sop"
 
-# Baseline allowlist export — nhóm mở rộng doc mới phải đồng bộ cleaning_rules + contract.
+# Khi thêm nguồn mới phải đồng bộ cleaning_rules, expectations và contract.
 allowed_doc_ids:
   - policy_refund_v4
   - sla_p1_2026
   - it_helpdesk_faq
   - hr_leave_policy
+  - access_control_sop
 
-# Merit/Distinction: có thể đưa cutoff versioning vào env và tham chiếu ở đây (tránh hard-code trong code).
+# Các giá trị này có biến môi trường tương ứng trong .env.example.
 policy_versioning:
+  refund_policy_min_effective_date: "2026-02-01"
+  sla_policy_min_effective_date: "2026-01-15"
+  helpdesk_faq_min_effective_date: "2026-01-20"
   hr_leave_min_effective_date: "2026-01-01"
+  access_sop_min_effective_date: "2026-01-01"

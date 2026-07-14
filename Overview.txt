@@ -1,0 +1,474 @@
+TỔNG QUAN DỰ ÁN - LECTURE DAY 08, 09, 10
+=========================================
+
+1. Mục tiêu chung
+-----------------
+
+Dự án này là chuỗi bài lab của học phần "AI in Action - Phase 1", mô phỏng quá trình xây dựng một hệ AI vận hành thực tế cho trợ lý nội bộ CS + IT Helpdesk.
+
+Ba ngày học không phải là ba bài rời rạc, mà là một mạch nâng cấp liên tục:
+
+- Day 08: xây nền RAG để trợ lý trả lời dựa trên tài liệu nội bộ có chứng cứ.
+- Day 09: tách RAG monolith thành hệ Supervisor - Workers để dễ điều phối, trace và mở rộng bằng công cụ ngoài.
+- Day 10: xây tầng data pipeline và data observability để dữ liệu đưa vào RAG/agent luôn sạch, đúng phiên bản và có thể giám sát.
+
+Ý tưởng xuyên suốt:
+
+    Tài liệu nội bộ
+        -> ingest / clean / validate / embed
+        -> retrieval đúng nguồn
+        -> trả lời có citation
+        -> điều phối bằng supervisor-workers
+        -> trace, eval, monitoring để biết hệ sai ở đâu
+
+Nói ngắn gọn: dự án không chỉ dạy "gọi LLM", mà dạy cách biến LLM thành một hệ thống có dữ liệu, kiểm thử, quan sát và bằng chứng.
+
+
+2. Bối cảnh nghiệp vụ
+---------------------
+
+Hệ thống cần trả lời câu hỏi nội bộ cho khối CS + IT Helpdesk dựa trên các tài liệu mẫu trong repo:
+
+- policy_refund_v4.txt: chính sách hoàn tiền, thời hạn 7 ngày làm việc, ngoại lệ Flash Sale, sản phẩm kỹ thuật số, sản phẩm đã kích hoạt.
+- sla_p1_2026.txt: SLA ticket P1, phản hồi ban đầu, thời gian xử lý, escalation và kênh thông báo.
+- access_control_sop.txt: quy trình cấp quyền hệ thống, cấp quyền Level 2/Level 3, người phê duyệt, trường hợp khẩn cấp.
+- it_helpdesk_faq.txt: FAQ IT như khóa tài khoản, reset mật khẩu, VPN, dung lượng email.
+- hr_leave_policy.txt: chính sách HR như ngày phép, remote, probation period.
+
+Các câu hỏi đánh giá kiểm tra nhiều loại năng lực:
+
+- Trích xuất con số cụ thể: "SLA P1 là bao lâu?", "Store credit bao nhiêu %?".
+- Phân biệt ngoại lệ: Flash Sale, license key, sản phẩm đã kích hoạt.
+- Suy luận theo thời gian: đơn trước ngày hiệu lực chính sách mới.
+- Multi-hop/cross-document: vừa cần SLA P1, vừa cần Access Control SOP.
+- Abstain: biết nói "không đủ thông tin" khi tài liệu không có dữ kiện.
+
+
+3. Cấu trúc repo ở mức tổng quan
+--------------------------------
+
+README.md
+    Tài liệu tổng quan cho cả ba ngày. File này giải thích mạch học từ RAG, sang multi-agent, sang data pipeline.
+
+day08/
+    Gồm slide lecture-08.html và lab về Full RAG Pipeline.
+    Trọng tâm: indexing, retrieval, grounded generation, evaluation.
+
+day09/
+    Gồm slide lecture-09.html và lab về Multi-Agent Orchestration.
+    Trọng tâm: supervisor-worker graph, worker contract, MCP mock tools, trace.
+
+day10/
+    Gồm slide lecture-10.html, instructor guide, PDF và lab về Data Pipeline + Data Observability.
+    Trọng tâm: raw CSV, cleaning rules, expectations, quarantine, embedding, manifest, freshness.
+
+Overview.txt
+    File tổng quan dự án hiện tại.
+
+knowledge.txt
+    File tổng hợp kiến thức cần có để làm bài.
+
+Note.txt
+    Hướng dẫn cài đặt, chạy, đọc artifact và tự kiểm chứng lần lượt cho Day 08, 09, 10.
+
+
+4. Day 08 - Full RAG Pipeline
+-----------------------------
+
+4.1. Mục tiêu
+
+Day 08 xây một pipeline RAG end-to-end:
+
+    data/docs/*.txt
+        -> preprocess
+        -> chunk
+        -> gắn metadata
+        -> embed
+        -> lưu vào ChromaDB
+        -> retrieve
+        -> build grounded prompt
+        -> gọi LLM
+        -> trả lời có citation
+        -> đánh giá bằng scorecard
+
+Mục tiêu quan trọng nhất là "grounded answer": câu trả lời phải dựa vào context được retrieve, có nguồn trích dẫn và biết từ chối khi không đủ dữ liệu.
+
+4.2. Thành phần chính
+
+day08/lab/index.py
+    Phụ trách xây index RAG.
+    Các phần chính:
+    - preprocess_document(): đọc tài liệu, tách metadata như source, department, effective_date, access.
+    - chunk_document(): chia tài liệu theo heading/section.
+    - _split_by_size(): chia nhỏ section dài, có overlap.
+    - get_embedding(): tạo embedding local đa ngôn ngữ bằng Sentence Transformers.
+    - build_index(): lưu chunk, embedding và metadata vào ChromaDB.
+    - list_chunks(), inspect_metadata_coverage(): kiểm tra chất lượng index.
+
+day08/lab/rag_answer.py
+    Phụ trách retrieval và sinh câu trả lời.
+    Các phần chính:
+    - retrieve_dense(): tìm kiếm bằng vector similarity.
+    - retrieve_sparse(): tìm kiếm keyword/BM25.
+    - retrieve_hybrid(): kết hợp dense + sparse bằng Reciprocal Rank Fusion.
+    - rerank(): chọn lại chunk tốt nhất bằng cross-encoder hoặc LLM rerank.
+    - transform_query(): mở rộng, tách hoặc biến đổi query.
+    - build_context_block(): đóng gói context có số thứ tự nguồn [1], [2], ...
+    - build_grounded_prompt(): prompt yêu cầu evidence-only, citation, abstain.
+    - call_llm(): gọi OpenAI/Gemini khi có API key, nếu không dùng fallback trích xuất có căn cứ.
+    - rag_answer(): pipeline hoàn chỉnh từ query đến answer.
+
+day08/lab/eval.py
+    Phụ trách đánh giá chất lượng RAG.
+    Các metric chính:
+    - Faithfulness: câu trả lời có bám chứng cứ không.
+    - Answer Relevance: câu trả lời có đúng trọng tâm câu hỏi không.
+    - Context Recall: retriever có lấy đúng nguồn kỳ vọng không.
+    - Completeness: câu trả lời có đủ ý quan trọng không.
+    - A/B comparison: so sánh baseline với variant.
+
+day08/lab/data/test_questions.json
+    Bộ 10 câu hỏi mẫu để kiểm tra pipeline, gồm SLA, refund, access control, FAQ IT, HR policy và câu hỏi thiếu context.
+
+day08/lab/docs/
+    Tài liệu kỹ thuật:
+    - architecture.md: mô tả thiết kế pipeline.
+    - tuning-log.md: ghi thí nghiệm tuning, đúng quy tắc chỉ đổi một biến mỗi lần.
+
+4.3. Điểm cần chú ý
+
+- RAG không được đánh giá bằng cảm giác; phải có câu hỏi test, expected answer, expected source và scorecard.
+- Chunking phải giữ ranh giới tự nhiên, tránh cắt giữa điều khoản.
+- Metadata là phần rất quan trọng vì giúp filter, cite, debug và kiểm tra freshness.
+- Query không có dữ liệu trong tài liệu phải trả lời theo hướng abstain, không bịa.
+- Khi tuning, chỉ nên thay một biến: chunking, hybrid, rerank hoặc prompt. Nếu thay nhiều biến cùng lúc sẽ không biết cải thiện đến từ đâu.
+
+
+5. Day 09 - Multi-Agent Orchestration
+-------------------------------------
+
+5.1. Mục tiêu
+
+Day 09 lấy bài toán Day 08 và refactor thành hệ Supervisor - Workers.
+
+Lý do cần tách:
+
+- Một RAG agent đơn lẻ vừa retrieve, vừa kiểm tra policy, vừa tổng hợp, vừa debug sẽ nhanh quá tải.
+- Khi sai, khó biết lỗi nằm ở retrieval, policy logic, tool call hay synthesis.
+- Tách worker giúp test độc lập, thay thế từng phần và ghi trace rõ ràng.
+
+Luồng chính:
+
+    User task
+        -> supervisor_node()
+        -> route_decision()
+        -> retrieval_worker
+        -> policy_tool_worker nếu là policy/access route
+        -> synthesis_worker
+        -> human_review nếu rủi ro cao và confidence thấp
+        -> final_answer + trace
+
+5.2. Thành phần chính
+
+day09/lab/graph.py
+    Orchestrator chính.
+    Các phần quan trọng:
+    - AgentState: state dùng chung toàn graph, chứa task, route_reason, risk_high, retrieved_chunks, policy_result, mcp_tools_used, final_answer, confidence, history.
+    - make_initial_state(): tạo state ban đầu cho mỗi run.
+    - supervisor_node(): đọc task và quyết định route.
+    - route_decision(): conditional edge trả về worker cần gọi.
+    - human_review_node(): ghi dấu HITL vào trace khi task rủi ro cao hoặc confidence thấp.
+    - retrieval_worker_node(), policy_tool_worker_node(), synthesis_worker_node(): wrapper gọi worker.
+    - build_graph(): bản Python thuần của supervisor-worker graph.
+    - run_graph(): public API cho một câu hỏi.
+    - save_trace(): lưu trace ra JSON.
+
+day09/lab/workers/retrieval.py
+    Retrieval Worker.
+    Nhiệm vụ:
+    - embed query;
+    - query ChromaDB collection day09_docs và giữ độ phủ nguồn cho task nhiều domain;
+    - trả về retrieved_chunks, retrieved_sources;
+    - ghi worker_io_logs để trace input/output.
+
+day09/lab/workers/policy_tool.py
+    Policy & Tool Worker.
+    Nhiệm vụ:
+    - kiểm tra chính sách và ngoại lệ;
+    - phát hiện Flash Sale, license key, subscription, sản phẩm đã kích hoạt;
+    - gọi MCP tool khi cần, ví dụ search_kb hoặc get_ticket_info;
+    - ghi policy_result và mcp_tools_used.
+
+day09/lab/workers/synthesis.py
+    Synthesis Worker.
+    Nhiệm vụ:
+    - xây context từ retrieved_chunks và policy_result;
+    - gọi LLM với system prompt evidence-only;
+    - trả về final_answer, sources, confidence;
+    - giảm hallucination bằng quy tắc "chỉ trả lời từ context".
+
+day09/lab/mcp_server.py
+    Mock MCP Server.
+    Các tool được expose:
+    - search_kb(query, top_k): tìm kiếm knowledge base.
+    - get_ticket_info(ticket_id): tra cứu ticket mock.
+    - check_access_permission(access_level, requester_role, is_emergency): kiểm tra cấp quyền.
+    - create_ticket(priority, title, description): tạo ticket mock.
+
+day09/lab/eval_trace.py
+    Chạy test questions, lưu trace và phân tích hệ multi-agent.
+    Metric chính:
+    - routing_distribution;
+    - avg_confidence;
+    - avg_latency_ms;
+    - mcp_usage_rate;
+    - hitl_rate;
+    - top_sources;
+    - so sánh Day 08 single-agent với Day 09 multi-agent.
+
+day09/lab/contracts/worker_contracts.yaml
+    Contract input/output cho từng worker.
+    Đây là tài liệu giúp worker có ranh giới rõ, dễ test và dễ thay thế.
+
+5.3. Điểm cần chú ý
+
+- Trace là sản phẩm bắt buộc, không chỉ là log phụ.
+- route_reason phải rõ ràng, có thể đọc được, không nên chỉ ghi "default" hoặc "unknown".
+- Worker phải có input/output khớp contract.
+- MCP ở lab này có thể là mock Python class, không bắt buộc server thật.
+- Câu multi-hop tốt thường cần gọi nhiều worker và ghi được workers_called trong trace.
+
+
+6. Day 10 - Data Pipeline & Data Observability
+----------------------------------------------
+
+6.1. Mục tiêu
+
+Day 10 nhấn mạnh: hệ RAG/multi-agent chỉ tốt nếu dữ liệu đầu vào tốt.
+
+Luồng chính:
+
+    data/raw/policy_export_dirty.csv
+        -> load_raw_csv()
+        -> clean_rows()
+        -> write cleaned CSV
+        -> write quarantine CSV
+        -> run_expectations()
+        -> halt hoặc tiếp tục
+        -> embed vào ChromaDB
+        -> ghi manifest
+        -> freshness check
+        -> eval retrieval / grading
+
+Day 10 giúp phát hiện các lỗi như:
+
+- duplicate record;
+- thiếu ngày hiệu lực;
+- doc_id lạ;
+- ngày không đúng ISO;
+- dữ liệu HR cũ xung đột bản 2026;
+- stale refund window 14 ngày thay vì 7 ngày;
+- nguồn hợp lệ bị bỏ khỏi allowlist;
+- vector cũ còn sót trong index sau khi publish.
+
+6.2. Thành phần chính
+
+day10/lab/etl_pipeline.py
+    Entrypoint của pipeline dữ liệu.
+    Hai chế độ chính:
+    - run: ingest -> clean -> validate -> embed -> manifest -> freshness.
+    - freshness: đọc manifest và kiểm tra SLA freshness.
+    Các điểm quan trọng:
+    - ghi log run_id, raw_records, cleaned_records, quarantine_records;
+    - tạo cleaned CSV và quarantine CSV;
+    - expectation fail loại halt sẽ dừng pipeline, trừ khi cố ý skip validate cho Sprint 3;
+    - embed idempotent bằng upsert theo chunk_id;
+    - prune vector id không còn trong cleaned run để tránh dữ liệu cũ làm sai retrieval.
+
+day10/lab/transform/cleaning_rules.py
+    Chứa logic làm sạch dữ liệu đã hoàn thiện:
+    - ALLOWED_DOC_IDS;
+    - chuẩn hóa effective_date về YYYY-MM-DD;
+    - quarantine doc_id lạ;
+    - quarantine ngày thiếu hoặc sai định dạng;
+    - quarantine HR policy stale trước 2026-01-01;
+    - quarantine chunk_text rỗng;
+    - loại duplicate chunk_text;
+    - sửa stale refund window từ "14 ngày làm việc" thành "7 ngày làm việc".
+
+    Lỗi allowlist của baseline đã được sửa: ALLOWED_DOC_IDS hiện có đủ 5 nguồn,
+    gồm access_control_sop, nên dữ liệu Access Control không bị quarantine nhầm.
+
+day10/lab/quality/expectations.py
+    Chứa expectation suite đã mở rộng:
+    - min_one_row: cleaned_rows phải có dữ liệu.
+    - no_empty_doc_id: không được có doc_id rỗng.
+    - refund_no_stale_14d_window: không còn refund window 14 ngày.
+    - chunk_min_length_8: cảnh báo chunk quá ngắn.
+    - effective_date_iso_yyyy_mm_dd: ngày phải theo ISO.
+    - hr_leave_no_stale_10d_annual: không còn bản HR cũ 10 ngày phép năm.
+
+    Mỗi expectation có severity:
+    - halt: fail thì pipeline phải dừng.
+    - warn: fail thì cảnh báo nhưng không nhất thiết dừng.
+
+day10/lab/monitoring/freshness_check.py
+    Kiểm tra freshness từ manifest.
+    Trả về:
+    - PASS nếu age_hours <= SLA;
+    - FAIL nếu vượt SLA;
+    - WARN nếu thiếu timestamp hoặc timestamp không parse được.
+
+day10/lab/eval_retrieval.py
+    Đánh giá retrieval bằng semantic search kết hợp lexical/domain rerank và top-k.
+    Không cần LLM.
+    Output CSV có các trường:
+    - top1_doc_id;
+    - contains_expected;
+    - hits_forbidden;
+    - top1_doc_expected;
+    - top_k_used.
+
+day10/lab/grading_run.py
+    Chạy bộ grading retrieval và ghi JSONL.
+    Mỗi dòng ghi:
+    - id;
+    - question;
+    - top1_doc_id;
+    - contains_expected;
+    - hits_forbidden;
+    - top1_doc_matches;
+    - grading_criteria.
+
+day10/lab/docs/
+    Tài liệu kỹ thuật đã hoàn thiện:
+    - pipeline_architecture.md: kiến trúc ingest, clean, validate, embed.
+    - data_contract.md: schema, owner, SLA, source map.
+    - runbook.md: hướng dẫn xử lý sự cố.
+    - quality_report_template.md: template báo cáo chất lượng.
+
+6.3. Điểm cần chú ý
+
+- Day 10 không chỉ sửa dữ liệu cho "chạy được"; phải có bằng chứng trước/sau.
+- Rule mới hoặc expectation mới phải có metric_impact, ví dụ làm thay đổi quarantine_records, expectation result hoặc eval result.
+- Freshness FAIL trên dữ liệu mẫu không nhất thiết là lỗi nếu dữ liệu export cũ; quan trọng là giải thích nhất quán trong runbook.
+- Pipeline phải idempotent: chạy lại không làm index phình vô hạn và không để vector cũ gây nhiễu top-k.
+- Debug thứ tự dữ liệu trước, model sau: freshness/version -> volume/errors -> schema/contract -> lineage/run_id -> retrieval/model/prompt.
+
+
+7. Mạch liên kết giữa ba ngày
+-----------------------------
+
+Day 08 tạo năng lực lõi:
+    "Từ câu hỏi, tìm đúng đoạn tài liệu và trả lời có chứng cứ."
+
+Day 09 thêm năng lực vận hành:
+    "Từ một agent đơn, tách thành supervisor-workers, có route_reason, worker_io_logs, MCP tools và trace."
+
+Day 10 bảo vệ chất lượng đầu vào:
+    "Từ dữ liệu raw nhiều lỗi, làm sạch, validate, embed và giám sát để agent không đọc nhầm dữ liệu cũ/sai."
+
+Khi ghép lại, kiến trúc vận hành hợp lý là:
+
+    Raw exports / policy docs
+        -> Day 10 data pipeline
+        -> ChromaDB / vector index sạch
+        -> Day 08 retrieval + grounded answer
+        -> Day 09 supervisor-workers + MCP + trace
+        -> evaluation, report, runbook
+
+
+8. Deliverables quan trọng
+--------------------------
+
+Day 08:
+    - index.py
+    - rag_answer.py
+    - eval.py
+    - results/scorecard_baseline.md
+    - results/scorecard_variant.md
+    - docs/architecture.md
+    - docs/tuning-log.md
+    - reports/group_report.md
+    - reports/individual/[ten].md
+
+Day 09:
+    - graph.py
+    - workers/retrieval.py
+    - workers/policy_tool.py
+    - workers/synthesis.py
+    - mcp_server.py
+    - eval_trace.py
+    - contracts/worker_contracts.yaml
+    - artifacts/traces/
+    - artifacts/grading_run.jsonl
+    - docs/system_architecture.md
+    - docs/routing_decisions.md
+    - docs/single_vs_multi_comparison.md
+
+Day 10:
+    - etl_pipeline.py
+    - transform/cleaning_rules.py
+    - quality/expectations.py
+    - monitoring/freshness_check.py
+    - contracts/data_contract.yaml
+    - artifacts/logs/
+    - artifacts/manifests/
+    - artifacts/quarantine/
+    - artifacts/cleaned/
+    - artifacts/eval/
+    - docs/pipeline_architecture.md
+    - docs/data_contract.md
+    - docs/runbook.md
+    - docs/quality_report_template.md
+    - reports/group_report.md
+    - reports/individual/[ten].md
+
+
+9. Trạng thái hiện tại của repo
+-------------------------------
+
+Phần mã nhóm và tài liệu kỹ thuật của cả ba lab đã được hoàn thiện. Không còn TODO
+triển khai trong các module chính. Các file kết quả runtime chưa được tạo sẵn vì chúng
+phải phản ánh lần chạy thật trên máy của người học.
+
+Day 08:
+    - index.py đã hoàn chỉnh preprocess, chunking, embedding local, upsert và prune ChromaDB.
+    - rag_answer.py đã có dense/BM25/hybrid retrieval, rerank, grounded prompt, citation và abstain.
+    - eval.py đã sinh hai scorecard, CSV A/B, grading log và tự cập nhật vùng kết quả trong tài liệu.
+
+Day 09:
+    - graph.py đã điều phối đầy đủ supervisor, retrieval, policy/tool, synthesis và HITL trace.
+    - Ba worker có contract, log input/output/error và có thể được gọi độc lập.
+    - MCP dispatcher có bốn tool; search_kb dùng retrieval thật thay vì evidence giả.
+    - eval_trace.py lưu trace, grading JSONL, tính metric và cập nhật tài liệu từ artifact thật.
+
+Day 10:
+    - etl_pipeline.py đã có ingest, clean, quarantine, validate, embed idempotent, prune, manifest và freshness.
+    - cleaning_rules.py có version cutoff cấu hình được, đủ 5 nguồn, chuẩn hóa dữ liệu, xử lý stale HR/refund và stable ID.
+    - expectations.py phân biệt halt/warn; eval và grading dùng chung retrieval connector, không dùng đáp án kỳ vọng để xếp hạng.
+
+Phần còn lại người học tự thực hiện theo Note.txt:
+    - tạo môi trường, cài dependency và chạy lệnh theo thứ tự;
+    - dùng grading_questions.json khi giảng viên công bố;
+    - đọc log/CSV/JSONL rồi hoàn thiện số liệu báo cáo;
+    - tự ghi báo cáo cá nhân đúng tên, vai trò và đóng góp thực tế.
+
+
+10. Kết luận
+------------
+
+Dự án này rèn năng lực xây hệ AI theo hướng production-minded:
+
+- RAG phải có dữ liệu, metadata, citation và evaluation.
+- Multi-agent phải có supervisor, worker contract, routing và trace.
+- Data pipeline phải có cleaning, quarantine, expectation, manifest và freshness.
+- Báo cáo phải dựa trên artifact thật: log, trace, scorecard, CSV eval, JSONL grading, run_id.
+
+Điểm cốt lõi để làm tốt bài này là không chỉ "có câu trả lời", mà phải chứng minh được:
+
+- câu trả lời đến từ nguồn nào;
+- route vì sao đi qua worker nào;
+- dữ liệu đã được làm sạch như thế nào;
+- lỗi được phát hiện ở bước nào;
+- thay đổi nào thật sự cải thiện kết quả.

@@ -8,4 +8,5 @@ chroma_db/
 .pytest_cache/
 *.log
 
-artifacts/*
+# Artifact trong rubric phải được commit; chỉ ChromaDB và file môi trường bị bỏ qua.
+!artifacts/logs/*.log

@@ -1,148 +1,29 @@
-# Single Agent vs Multi-Agent Comparison — Lab Day 09
+# So sánh Single Agent và Multi-Agent - Day 09
 
-**Nhóm:** ___________  
-**Ngày:** ___________
+## Phương pháp
 
-> **Hướng dẫn:** So sánh Day 08 (single-agent RAG) với Day 09 (supervisor-worker).
-> Phải có **số liệu thực tế** từ trace — không ghi ước đoán.
-> Chạy cùng test questions cho cả hai nếu có thể.
+- Day 08 dùng các dòng `baseline_dense` trong `day08/lab/results/ab_comparison.csv`.
+- Day 09 dùng JSON trace trong `day09/lab/artifacts/traces`.
+- Không ước lượng metric bị thiếu. Day 08 hiện không ghi latency/confidence nên các ô đó phải là `N/A` cho đến khi có artifact cùng định nghĩa.
+- `answer_match_rate` Day 09 là heuristic token coverage; grading criteria thủ công vẫn là nguồn kết luận cuối.
 
----
+<!-- AUTO_COMPARISON_START -->
+Chưa có số liệu runtime. Chạy Day 08 `eval.py`, sau đó chạy Day 09 `eval_trace.py --compare`.
+<!-- AUTO_COMPARISON_END -->
 
-## 1. Metrics Comparison
+## Khác biệt kiến trúc có thể xác minh từ code
 
-> Điền vào bảng sau. Lấy số liệu từ:
-> - Day 08: chạy `python eval.py` từ Day 08 lab
-> - Day 09: chạy `python eval_trace.py` từ lab này
+| Tiêu chí | Day 08 | Day 09 |
+|---|---|---|
+| Routing visibility | Không có route | Có `supervisor_route` và `route_reason` |
+| Ranh giới lỗi | Retrieval + generation trong một pipeline | `worker_io_logs` riêng cho từng worker |
+| External tool | Không có | MCP envelope có input/output/error/timestamp |
+| Policy exception | Phụ thuộc context/prompt | Policy worker xử lý explicit rule và temporal scope |
+| HITL | Không | Ghi `hitl_triggered` khi risk cao, confidence thấp |
+| Generation calls | Tối đa một | Tối đa một; policy route thêm tool call, không thêm LLM bắt buộc |
 
-| Metric | Day 08 (Single Agent) | Day 09 (Multi-Agent) | Delta | Ghi chú |
-|--------|----------------------|---------------------|-------|---------|
-| Avg confidence | ___ | ___ | ___ | |
-| Avg latency (ms) | ___ | ___ | ___ | |
-| Abstain rate (%) | ___ | ___ | ___ | % câu trả về "không đủ info" |
-| Multi-hop accuracy | ___ | ___ | ___ | % câu multi-hop trả lời đúng |
-| Routing visibility | ✗ Không có | ✓ Có route_reason | N/A | |
-| Debug time (estimate) | ___ phút | ___ phút | ___ | Thời gian tìm ra 1 bug |
-| ___________________ | ___ | ___ | ___ | |
+## Kết luận thiết kế
 
-> **Lưu ý:** Nếu không có Day 08 kết quả thực tế, ghi "N/A" và giải thích.
+Multi-agent không mặc nhiên tăng chất lượng retrieval; lợi ích trực tiếp là khả năng quan sát, tách trách nhiệm và mở rộng tool. Đổi lại, policy route có thêm độ trễ do MCP/search và state phức tạp hơn. Với câu tra cứu một tài liệu, Day 08 thường đơn giản hơn; với câu access/refund exception hoặc cần audit đường đi, Day 09 phù hợp hơn.
 
----
-
-## 2. Phân tích theo loại câu hỏi
-
-### 2.1 Câu hỏi đơn giản (single-document)
-
-| Nhận xét | Day 08 | Day 09 |
-|---------|--------|--------|
-| Accuracy | ___ | ___ |
-| Latency | ___ | ___ |
-| Observation | ___________________ | ___________________ |
-
-**Kết luận:** Multi-agent có cải thiện không? Tại sao có/không?
-
-_________________
-
-### 2.2 Câu hỏi multi-hop (cross-document)
-
-| Nhận xét | Day 08 | Day 09 |
-|---------|--------|--------|
-| Accuracy | ___ | ___ |
-| Routing visible? | ✗ | ✓ |
-| Observation | ___________________ | ___________________ |
-
-**Kết luận:**
-
-_________________
-
-### 2.3 Câu hỏi cần abstain
-
-| Nhận xét | Day 08 | Day 09 |
-|---------|--------|--------|
-| Abstain rate | ___ | ___ |
-| Hallucination cases | ___ | ___ |
-| Observation | ___________________ | ___________________ |
-
-**Kết luận:**
-
-_________________
-
----
-
-## 3. Debuggability Analysis
-
-> Khi pipeline trả lời sai, mất bao lâu để tìm ra nguyên nhân?
-
-### Day 08 — Debug workflow
-```
-Khi answer sai → phải đọc toàn bộ RAG pipeline code → tìm lỗi ở indexing/retrieval/generation
-Không có trace → không biết bắt đầu từ đâu
-Thời gian ước tính: ___ phút
-```
-
-### Day 09 — Debug workflow
-```
-Khi answer sai → đọc trace → xem supervisor_route + route_reason
-  → Nếu route sai → sửa supervisor routing logic
-  → Nếu retrieval sai → test retrieval_worker độc lập
-  → Nếu synthesis sai → test synthesis_worker độc lập
-Thời gian ước tính: ___ phút
-```
-
-**Câu cụ thể nhóm đã debug:** _(Mô tả 1 lần debug thực tế trong lab)_
-
-_________________
-
----
-
-## 4. Extensibility Analysis
-
-> Dễ extend thêm capability không?
-
-| Scenario | Day 08 | Day 09 |
-|---------|--------|--------|
-| Thêm 1 tool/API mới | Phải sửa toàn prompt | Thêm MCP tool + route rule |
-| Thêm 1 domain mới | Phải retrain/re-prompt | Thêm 1 worker mới |
-| Thay đổi retrieval strategy | Sửa trực tiếp trong pipeline | Sửa retrieval_worker độc lập |
-| A/B test một phần | Khó — phải clone toàn pipeline | Dễ — swap worker |
-
-**Nhận xét:**
-
-_________________
-
----
-
-## 5. Cost & Latency Trade-off
-
-> Multi-agent thường tốn nhiều LLM calls hơn. Nhóm đo được gì?
-
-| Scenario | Day 08 calls | Day 09 calls |
-|---------|-------------|-------------|
-| Simple query | 1 LLM call | ___ LLM calls |
-| Complex query | 1 LLM call | ___ LLM calls |
-| MCP tool call | N/A | ___ |
-
-**Nhận xét về cost-benefit:**
-
-_________________
-
----
-
-## 6. Kết luận
-
-> **Multi-agent tốt hơn single agent ở điểm nào?**
-
-1. ___________________
-2. ___________________
-
-> **Multi-agent kém hơn hoặc không khác biệt ở điểm nào?**
-
-1. ___________________
-
-> **Khi nào KHÔNG nên dùng multi-agent?**
-
-_________________
-
-> **Nếu tiếp tục phát triển hệ thống này, nhóm sẽ thêm gì?**
-
-_________________
+Không nên dùng multi-agent khi task chỉ có một bước, không cần capability ngoài và không cần truy vết theo worker. Nên cân nhắc khi domain có policy exception, multi-hop hoặc yêu cầu kiểm soát/HITL.
